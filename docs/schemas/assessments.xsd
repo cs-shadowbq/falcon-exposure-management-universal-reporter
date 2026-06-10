@@ -1,0 +1,329 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FEMUR Assessments XML Schema
+  Validates: assessments.xml (flat) and assessments-\-{cid}-\-{aid}-\-{epoch}.xml (bucketed)
+  Root element: <assessments>
+  Each <record> represents a single SCA/STIG configuration assessment finding.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:femur:schema:assessments:1.0.0" xmlns="urn:femur:schema:assessments:1.0.0" elementFormDefault="qualified" version="1.0.0">
+
+  <!-- Reusable type: string array -->
+  <xs:complexType name="stringArrayType">
+    <xs:annotation>
+      <xs:documentation>Array of string values serialized as item elements.</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Type: compliance control reference -->
+  <xs:complexType name="complianceControlType">
+    <xs:annotation>
+      <xs:documentation>A single compliance framework control reference.</xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="id" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Control identifier.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="control" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Control code (e.g. "CM-7", "3.4.7").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: array of compliance controls -->
+  <xs:complexType name="controlsArrayType">
+    <xs:annotation>
+      <xs:documentation>Array of compliance control objects.</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:all>
+            <xs:element name="id" type="xs:string" minOccurs="0"/>
+            <xs:element name="control" type="xs:string" minOccurs="0"/>
+          </xs:all>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Type: compliance mapping object -->
+  <xs:complexType name="complianceMappingType">
+    <xs:annotation>
+      <xs:documentation>
+        A compliance framework mapping (e.g. NIST 800-53, PCI DSS, SOC2, ISO, HITRUST).
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="framework" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Compliance framework name (e.g. "NIST", "PCI DSS", "SOC2").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="version" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Framework version (e.g. "NIST 800-53 REV 5").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="controls" type="controlsArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Array of control references for this framework.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: array of compliance mappings -->
+  <xs:complexType name="complianceMappingsArrayType">
+    <xs:annotation>
+      <xs:documentation>
+        Array of compliance framework mapping objects.
+        Present when --assessment-compliance-mapping is enabled (default: on).
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:all>
+            <xs:element name="framework" type="xs:string" minOccurs="0"/>
+            <xs:element name="version" type="xs:string" minOccurs="0"/>
+            <xs:element name="controls" type="controlsArrayType" minOccurs="0"/>
+          </xs:all>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Type: assessment rule -->
+  <xs:complexType name="ruleType">
+    <xs:annotation>
+      <xs:documentation>
+        The STIG/CIS benchmark rule that was evaluated.
+        Required fields: id, name, severity.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <!-- Required -->
+      <xs:element name="id" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Rule identifier.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="name" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Human-readable rule name.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="severity" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Rule severity: "Critical", "High", "Medium", "Low", or "Informational".</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+
+      <!-- Optional -->
+      <xs:element name="authority" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Authoring authority (e.g. "CIS", "DISA STIG").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="platform_name" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Target platform (e.g. "Linux", "Windows").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="benchmark_type" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Benchmark type (e.g. "OS", "Application").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="recommendation_id" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>CIS/STIG recommendation identifier (e.g. "6.2.3.5").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="group_id" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Benchmark group identifier.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="group_name" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Benchmark group name (includes benchmark title and level).</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="policy_id" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>SCA policy identifier.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="policy_name" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>SCA policy name.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="edited" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Whether the rule has been customized from the default ("true" or "false").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="compliance_mappings" type="complianceMappingsArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Compliance framework mappings (NIST, PCI DSS, SOC2, ISO, HITRUST).</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="cve_ids" type="stringArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>CVE IDs associated with this rule.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: finding object -->
+  <xs:complexType name="findingType">
+    <xs:annotation>
+      <xs:documentation>
+        Assessment finding details. Required fields: status, rule.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <!-- Required -->
+      <xs:element name="status" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>
+            Assessment result status: "pass", "fail", "error", "not_applicable",
+            "manual", "unknown", "unsupported", or "inactive".
+          </xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="rule" type="ruleType">
+        <xs:annotation>
+          <xs:documentation>The STIG/CIS benchmark rule that was evaluated.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+
+      <!-- Optional -->
+      <xs:element name="status_since_timestamp" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>ISO 8601 timestamp when the current status was set.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="evaluation_reason" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Reason for the evaluation result (e.g. "not_checked", "passed_rule").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="evaluation_logic_type" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Type of evaluation logic available (e.g. "AVAILABLE").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: array of IAVM notices -->
+  <xs:complexType name="iavmNoticesArrayType">
+    <xs:annotation>
+      <xs:documentation>
+        Array of IAVM notice objects. Present only when --iavm-file is used
+        and the rule's cve_ids match a notice.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:all>
+            <xs:element name="iavm_number" type="xs:string">
+              <xs:annotation>
+                <xs:documentation>DISA IAVM notice number (e.g. "2024-T-0012").</xs:documentation>
+              </xs:annotation>
+            </xs:element>
+            <xs:element name="iavm_severity" type="xs:string">
+              <xs:annotation>
+                <xs:documentation>DISA severity category: "CAT I", "CAT II", or "CAT III".</xs:documentation>
+              </xs:annotation>
+            </xs:element>
+            <xs:element name="iavm_title" type="xs:string">
+              <xs:annotation>
+                <xs:documentation>IAVM notice title.</xs:documentation>
+              </xs:annotation>
+            </xs:element>
+          </xs:all>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Main record type -->
+  <xs:complexType name="assessmentRecordType">
+    <xs:annotation>
+      <xs:documentation>
+        A single SCA/STIG configuration assessment finding.
+        Required fields: id, aid, cid, finding.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <!-- Required -->
+      <xs:element name="id" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Unique assessment finding identifier (composite key of cid, aid, rule, and group).</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="aid" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Falcon Agent ID of the assessed host.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="cid" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>CrowdStrike Customer ID (CID).</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="finding" type="findingType">
+        <xs:annotation>
+          <xs:documentation>Assessment finding details.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+
+      <!-- Optional -->
+      <xs:element name="created_timestamp" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>ISO 8601 timestamp when the finding was first created.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="updated_timestamp" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>ISO 8601 timestamp of the most recent evaluation.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="iavm_notices" type="iavmNoticesArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>IAVM notice metadata. Present only when --iavm-file is used and matches exist.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Root element -->
+  <xs:element name="assessments">
+    <xs:annotation>
+      <xs:documentation>
+        Root element containing zero or more assessment finding records.
+        Each record represents an SCA/STIG configuration compliance evaluation on a host.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="record" type="assessmentRecordType"
+                    minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

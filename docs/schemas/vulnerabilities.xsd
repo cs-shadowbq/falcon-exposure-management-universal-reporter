@@ -1,0 +1,324 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FEMUR Vulnerabilities XML Schema
+  Validates: vulnerabilities.xml (flat) and vulnerabilities-\-{cid}-\-{aid}-\-{epoch}.xml (bucketed)
+  Root element: <vulnerabilities>
+  Each <record> represents a single vulnerability finding on a host.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:femur:schema:vulnerabilities:1.0.0" xmlns="urn:femur:schema:vulnerabilities:1.0.0" elementFormDefault="qualified" version="1.0.0">
+
+  <!-- Reusable type: string array -->
+  <xs:complexType name="stringArrayType">
+    <xs:annotation>
+      <xs:documentation>Array of string values serialized as item elements.</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Type: data provider object -->
+  <xs:complexType name="dataProviderType">
+    <xs:annotation>
+      <xs:documentation>A source that reported this vulnerability.</xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="provider" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Provider name (e.g. "Falcon sensor").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: array of data providers -->
+  <xs:complexType name="dataProvidersArrayType">
+    <xs:sequence>
+      <xs:element name="item" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:all>
+            <xs:element name="provider" type="xs:string" minOccurs="0"/>
+          </xs:all>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Type: remediation object -->
+  <xs:complexType name="remediationType">
+    <xs:annotation>
+      <xs:documentation>Remediation entity references.</xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="ids" type="stringArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Remediation entity IDs.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: evaluation logic object -->
+  <xs:complexType name="evaluationLogicType">
+    <xs:annotation>
+      <xs:documentation>Evaluation logic reference.</xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="id" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Evaluation logic identifier.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: remediation info object -->
+  <xs:complexType name="remediationInfoType">
+    <xs:annotation>
+      <xs:documentation>Recommended and minimum remediation identifiers.</xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="recommended_id" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Recommended remediation ID.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="minimum_id" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Minimum required remediation ID.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: affected application object -->
+  <xs:complexType name="affectedAppType">
+    <xs:annotation>
+      <xs:documentation>An application affected by this vulnerability on the host.</xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="vendor_normalized" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Normalized vendor name.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="product_name_version" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Product name and version combined.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="product_name_normalized" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Normalized product name.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="sub_status" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Per-app vulnerability sub-status.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="remediation" type="remediationType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Remediation entity references for this app.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="evaluation_logic" type="evaluationLogicType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Evaluation logic used for detection.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="remediation_info" type="remediationInfoType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Recommended and minimum remediation info.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: array of affected apps -->
+  <xs:complexType name="appsArrayType">
+    <xs:annotation>
+      <xs:documentation>Array of affected application objects.</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:all>
+            <xs:element name="vendor_normalized" type="xs:string" minOccurs="0"/>
+            <xs:element name="product_name_version" type="xs:string" minOccurs="0"/>
+            <xs:element name="product_name_normalized" type="xs:string" minOccurs="0"/>
+            <xs:element name="sub_status" type="xs:string" minOccurs="0"/>
+            <xs:element name="remediation" type="remediationType" minOccurs="0"/>
+            <xs:element name="evaluation_logic" type="evaluationLogicType" minOccurs="0"/>
+            <xs:element name="remediation_info" type="remediationInfoType" minOccurs="0"/>
+          </xs:all>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Type: suppression info -->
+  <xs:complexType name="suppressionInfoType">
+    <xs:annotation>
+      <xs:documentation>Vulnerability suppression state.</xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="is_suppressed" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Whether the vulnerability has been suppressed ("true" or "false").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: CVE metadata -->
+  <xs:complexType name="cveType">
+    <xs:annotation>
+      <xs:documentation>CVE metadata object.</xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="id" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>CVE identifier (mirrors vulnerability_id).</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: array of IAVM notices -->
+  <xs:complexType name="iavmNoticesArrayType">
+    <xs:annotation>
+      <xs:documentation>
+        Array of IAVM notice objects. Present only when --iavm-file is used
+        and a matching notice exists for this CVE.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:all>
+            <xs:element name="iavm_number" type="xs:string">
+              <xs:annotation>
+                <xs:documentation>DISA IAVM notice number (e.g. "2024-T-0012").</xs:documentation>
+              </xs:annotation>
+            </xs:element>
+            <xs:element name="iavm_severity" type="xs:string">
+              <xs:annotation>
+                <xs:documentation>DISA severity category: "CAT I", "CAT II", or "CAT III".</xs:documentation>
+              </xs:annotation>
+            </xs:element>
+            <xs:element name="iavm_title" type="xs:string">
+              <xs:annotation>
+                <xs:documentation>IAVM notice title.</xs:documentation>
+              </xs:annotation>
+            </xs:element>
+          </xs:all>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Main record type -->
+  <xs:complexType name="vulnerabilityRecordType">
+    <xs:annotation>
+      <xs:documentation>
+        A single vulnerability finding record. Required fields: id, cid, aid,
+        vulnerability_id, status. All others are optional.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <!-- Required fields -->
+      <xs:element name="id" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Unique vulnerability finding identifier (composite key of aid + vulnerability metadata).</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="cid" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>CrowdStrike Customer ID (CID).</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="aid" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Falcon Agent ID of the affected host.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="vulnerability_id" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Vulnerability identifier. CVE format (e.g. "CVE-2024-0741") or CrowdStrike-native (e.g. "CS-U25-F308859").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="status" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Current vulnerability status: "open", "reopen", or "closed".</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+
+      <!-- Optional scalar fields -->
+      <xs:element name="vulnerability_metadata_id" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>CrowdStrike internal vulnerability metadata ID (e.g. "CS-V23-5700999").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="created_timestamp" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>ISO 8601 timestamp when the vulnerability was first detected.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="updated_timestamp" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>ISO 8601 timestamp of the most recent update.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="confidence" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Detection confidence level (e.g. "confirmed").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+
+      <!-- Optional complex fields -->
+      <xs:element name="data_providers" type="dataProvidersArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Sources that reported this vulnerability.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="apps" type="appsArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Affected applications on this host.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="suppression_info" type="suppressionInfoType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Vulnerability suppression state.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="cve" type="cveType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>CVE metadata object.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="iavm_notices" type="iavmNoticesArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>IAVM notice metadata. Present only when --iavm-file is used and matches exist.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Root element -->
+  <xs:element name="vulnerabilities">
+    <xs:annotation>
+      <xs:documentation>
+        Root element containing zero or more vulnerability finding records.
+        Each record represents a CVE or CrowdStrike-native vulnerability detected on a host.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="record" type="vulnerabilityRecordType"
+                    minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

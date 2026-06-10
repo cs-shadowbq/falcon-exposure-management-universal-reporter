@@ -1,0 +1,57 @@
+name: Pylint
+
+permissions:
+  contents: read
+
+#  C0301 (line-too-long): Some lines (URLs, long string literals, complex type hints, FQL queries) are more readable when kept intact rather than
+#    artificially wrapped. Modern wide monitors and horizontal scrolling make this less a personal preference.
+#  R0801 (duplicate-code): Similar lines across files are often unavoidable in policy grading logic where each policy type follows similar patterns
+#    but with type-specific variations. The structural similarity is intentional for consistency and maintainability.
+#  C0411 (wrong-import-order): Import ordering can conflict with formatter tools (black, isort) and doesn't affect functionality. Team consistency
+#    via automated formatters takes precedence over pylint's preferences.
+#  C0413 (wrong-import-position): Used intentionally for conditional imports (e.g., TYPE_CHECKING guards, optional dependencies) and module-level
+#    initialization that must occur before imports.
+#  C0415 (import-outside-toplevel): Lazy imports inside functions/methods are deliberately used to:
+#    * Break circular import dependencies
+#    * Improve startup time by deferring expensive imports
+#    * Load optional dependencies only when needed
+#  W0613 (unused-argument): Common in interface implementations, abstract method overrides, active development and callback signatures where the
+#    signature must match but not all parameters are used in every implementation.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip==24.0
+          python -m pip install pylint
+          pip install -e "./packages/pipeline"
+          pip install -e "./packages/core"
+          pip install -e "./packages/cli"
+          pip install -e "./packages/server"
+          pip install -e ".[dev,test]"
+
+      - name: Lint package source with pylint
+        run: |
+          # exit-zero treats all errors as warnings.
+          pylint packages/core/src packages/pipeline/src packages/cli/src packages/server/src --disable=R0801,C0411,C0301,C0413,C0415,W0613 --exit-zero
+
+      - name: Lint Summary
+        run: |
+          echo "✅ Pylint code quality check completed"

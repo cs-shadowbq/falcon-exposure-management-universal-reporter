@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/falcon-exposure-management-universal-reporter/schemas/host_map.schema.json",
+  "version": "1.0.0",
+  "title": "FEMUR Host Map Record",
+  "description": "Schema for a single host map record in the host_map JSONL output. Maps Discover host IDs to Falcon Agent IDs (AIDs). Each line in host_map.jsonl conforms to this schema.",
+  "type": "object",
+  "required": ["_host_map_id", "cid", "aid"],
+  "properties": {
+    "_host_map_id": {
+      "type": "string",
+      "description": "Discover-internal host identifier (composite key used by the Discover API)."
+    },
+    "cid": {
+      "type": "string",
+      "description": "CrowdStrike Customer ID (CID)."
+    },
+    "aid": {
+      "type": "string",
+      "description": "Falcon Agent ID (device_id). The primary key used across all datasets."
+    }
+  },
+  "additionalProperties": false
+}

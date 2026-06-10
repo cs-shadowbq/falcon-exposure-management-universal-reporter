@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+"""
+Development wrapper script for femur CLI.
+
+This script allows running the tool from the repository without installing it.
+All CLI logic is implemented in femur_cli.cli.
+"""
+from femur_cli.cli import main
+
+if __name__ == "__main__":
+    main()

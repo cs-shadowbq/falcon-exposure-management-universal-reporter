@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "falcon-exposure-management-universal-reporter"
+version = "2.0.0"
+description = "CrowdStrike Falcon higher-level API library for application, vulnerability, and assessment inventory"
+readme = {text = "CrowdStrike Falcon higher-level API library for application, vulnerability, and assessment inventory", content-type = "text/plain"}
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Scott MacGregor" }]
+
+dependencies = [
+    "crowdstrike-falconpy>=1.6.1",
+    "rich>=13.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.4.0", "pytest-cov>=4.1.0", "pytest-mock>=3.12.0"]
+
+[project.urls]
+repository = "https://github.com/cs-shadowbq/falcon-exposure-management-universal-reporter"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]

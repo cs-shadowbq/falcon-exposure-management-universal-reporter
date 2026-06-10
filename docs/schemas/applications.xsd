@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FEMUR Applications XML Schema
+  Validates: applications.xml (flat) and applications-\-{cid}-\-{aid}-\-{epoch}.xml (bucketed)
+  Root element: <applications>
+  Each <record> represents a single software application installed on a host.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:femur:schema:applications:1.0.0" xmlns="urn:femur:schema:applications:1.0.0" elementFormDefault="qualified" version="1.0.0">
+
+  <!-- Reusable type: IAVM notice metadata -->
+  <xs:complexType name="iavmNoticeType">
+    <xs:annotation>
+      <xs:documentation>
+        A single DISA IAVM notice matching this application's CVEs.
+        Present only when --iavm-file is used and a match exists.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="iavm_number" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>DISA IAVM notice number (e.g. "2024-T-0012").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="iavm_severity" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>DISA severity category: "CAT I", "CAT II", or "CAT III".</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="iavm_title" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>IAVM notice title.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Reusable type: string array (used for groups, architectures) -->
+  <xs:complexType name="stringArrayType">
+    <xs:annotation>
+      <xs:documentation>Array of string values serialized as item elements.</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" type="xs:string" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Reusable type: array of IAVM notices -->
+  <xs:complexType name="iavmNoticesArrayType">
+    <xs:annotation>
+      <xs:documentation>Array of IAVM notice objects.</xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" minOccurs="0" maxOccurs="unbounded">
+        <xs:complexType>
+          <xs:all>
+            <xs:element name="iavm_number" type="xs:string"/>
+            <xs:element name="iavm_severity" type="xs:string"/>
+            <xs:element name="iavm_title" type="xs:string"/>
+          </xs:all>
+        </xs:complexType>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Type: host reference object -->
+  <xs:complexType name="hostRefType">
+    <xs:annotation>
+      <xs:documentation>
+        Host reference containing the Discover-internal host identifier.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="id" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Discover-internal host identifier.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Main record type -->
+  <xs:complexType name="applicationRecordType">
+    <xs:annotation>
+      <xs:documentation>
+        A single application inventory record. Only 'id' is required;
+        all other fields are optional depending on API response and CLI flags.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <!-- Required -->
+      <xs:element name="id" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>Unique application record identifier.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+
+      <!-- Optional scalar fields -->
+      <xs:element name="cid" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>CrowdStrike Customer ID (CID) that owns this host.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="name" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Application name as reported by the Falcon sensor.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="vendor" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Application vendor as reported by the Falcon sensor.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="version" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Application version string.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="software_type" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Type of software (e.g. "application").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="name_vendor" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Combined name and vendor identifier used for deduplication.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="name_vendor_version" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Combined name, vendor, and version identifier.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="versioning_scheme" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Detected versioning scheme (e.g. "semver", "unknown").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="category" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Application category (e.g. "browser", "security").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="first_seen_timestamp" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>ISO 8601 timestamp when the application was first observed.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="last_updated_timestamp" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>ISO 8601 timestamp of the most recent update to this record.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="is_suspicious" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Whether the application has been flagged as suspicious ("true" or "false").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="is_normalized" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Whether vendor/product names have been normalized by the API ("true" or "false").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="aid" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Falcon Agent ID. Present when --decorate-aids or --bucket-by-aid is used.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="cpe" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Generated CPE 2.3 URI for this application.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="cpe_match_type" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>How the CPE was derived. Currently always "generated".</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+
+      <!-- Optional array fields -->
+      <xs:element name="groups" type="stringArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Host group IDs this application's host belongs to.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="architectures" type="stringArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Supported architectures (e.g. "x64", "amd64").</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+
+      <!-- Optional nested objects -->
+      <xs:element name="host" type="hostRefType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Host reference containing the Discover host ID.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="iavm_notices" type="iavmNoticesArrayType" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>IAVM notice metadata. Present only when --iavm-file is used and matches exist.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Root element -->
+  <xs:element name="applications">
+    <xs:annotation>
+      <xs:documentation>
+        Root element containing zero or more application inventory records.
+        Each record represents a software application installed on a Falcon-managed host.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="record" type="applicationRecordType"
+                    minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

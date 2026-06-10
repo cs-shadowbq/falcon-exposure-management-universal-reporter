@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = []
+
+[project]
+name = "falcon-exposure-management-universal-reporter-workspace"
+version = "2.0.0"
+description = "Workspace for Falcon Exposure Management universal reporter packages. Python tool to export CrowdStrike FEM data at scale."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [
+    { name = "Scott MacGregor", email = "scott.macgregor@crowdstrike.com" },
+]
+dependencies = [
+    "falcon-exposure-management-universal-reporter>=2.0.0,<3.0.0",
+    "femur-pipeline>=2.0.0,<3.0.0",
+    "femur-cli>=2.0.0,<3.0.0",
+    "femur-server>=2.0.0,<3.0.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.4.0", "pytest-cov>=4.1.0", "pytest-mock>=3.12.0"]
+dev = ["bandit>=1.7.0", "mypy>=1.7.0", "pylint>=3.0.0"]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "packages/core/tests",
+    "packages/pipeline/tests",
+    "packages/cli/tests",
+    "packages/server/tests",
+]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"
+addopts = ["--verbose", "--strict-markers", "--tb=short", "-ra"]
+markers = [
+    "unit: Unit tests that run fast without external dependencies",
+    "integration: Integration tests with multiple components",
+    "slow: Tests that take longer to execute",
+    "e2e: End-to-end tests requiring external services",
+]
+filterwarnings = [
+    "ignore:builtin type SwigPyPacked has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type SwigPyObject has no __module__ attribute:DeprecationWarning",
+    "ignore:builtin type swigvarlink has no __module__ attribute:DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = [
+    "packages/core/src/femur",
+    "packages/pipeline/src/femur_pipeline",
+    "packages/cli/src/femur_cli",
+    "packages/server/src/femur_server",
+]
+omit = ["*/tests/*", "*/test_*", "*/__pycache__/*", "*/site-packages/*"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+
+[tool.coverage.html]
+directory = "htmlcov"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true

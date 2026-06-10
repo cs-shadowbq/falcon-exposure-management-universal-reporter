@@ -1,0 +1,176 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/falcon-exposure-management-universal-reporter/schemas/assessments.schema.json",
+  "version": "1.0.0",
+  "title": "FEMUR Assessment Record",
+  "description": "Schema for a single configuration assessment (SCA/STIG) record in the assessments JSONL output. Each line in assessments.jsonl conforms to this schema.",
+  "type": "object",
+  "required": ["id", "aid", "cid", "finding"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique assessment finding identifier (composite key of cid, aid, rule, and group)."
+    },
+    "aid": {
+      "type": "string",
+      "description": "Falcon Agent ID of the assessed host."
+    },
+    "cid": {
+      "type": "string",
+      "description": "CrowdStrike Customer ID (CID)."
+    },
+    "created_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the finding was first created."
+    },
+    "updated_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of the most recent evaluation."
+    },
+    "finding": {
+      "type": "object",
+      "description": "Assessment finding details.",
+      "required": ["status", "rule"],
+      "properties": {
+        "status_since_timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the current status was set."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pass", "fail", "error", "not_applicable", "manual", "unknown", "unsupported", "inactive"],
+          "description": "Assessment result status."
+        },
+        "evaluation_reason": {
+          "type": "string",
+          "description": "Reason for the evaluation result (e.g. 'not_checked', 'passed_rule')."
+        },
+        "evaluation_logic_type": {
+          "type": "string",
+          "description": "Type of evaluation logic available (e.g. 'AVAILABLE')."
+        },
+        "rule": {
+          "type": "object",
+          "description": "The STIG/benchmark rule that was evaluated.",
+          "required": ["id", "name", "severity"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "description": "Rule identifier."
+            },
+            "name": {
+              "type": "string",
+              "description": "Human-readable rule name."
+            },
+            "authority": {
+              "type": "string",
+              "description": "Authoring authority (e.g. 'CIS', 'DISA STIG')."
+            },
+            "platform_name": {
+              "type": "string",
+              "description": "Target platform (e.g. 'Linux', 'Windows')."
+            },
+            "benchmark_type": {
+              "type": "string",
+              "description": "Benchmark type (e.g. 'OS', 'Application')."
+            },
+            "severity": {
+              "type": "string",
+              "enum": ["Critical", "High", "Medium", "Low", "Informational"],
+              "description": "Rule severity level."
+            },
+            "recommendation_id": {
+              "type": "string",
+              "description": "CIS/STIG recommendation identifier (e.g. '6.2.3.5')."
+            },
+            "group_id": {
+              "type": "string",
+              "description": "Benchmark group identifier."
+            },
+            "group_name": {
+              "type": "string",
+              "description": "Benchmark group name (includes benchmark title and level)."
+            },
+            "policy_id": {
+              "type": "string",
+              "description": "SCA policy identifier."
+            },
+            "policy_name": {
+              "type": "string",
+              "description": "SCA policy name."
+            },
+            "edited": {
+              "type": "boolean",
+              "description": "Whether the rule has been customized from the default."
+            },
+            "compliance_mappings": {
+              "type": "array",
+              "description": "Compliance framework mappings. Present when --assessment-compliance-mapping is enabled (default: on).",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "framework": {
+                    "type": "string",
+                    "description": "Compliance framework name (e.g. 'NIST', 'PCI DSS', 'SOC2', 'ISO', 'HITRUST')."
+                  },
+                  "version": {
+                    "type": "string",
+                    "description": "Framework version."
+                  },
+                  "controls": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "description": "Control identifier."
+                        },
+                        "control": {
+                          "type": "string",
+                          "description": "Control code."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "cve_ids": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "CVE IDs associated with this rule (when available from the API)."
+            }
+          }
+        }
+      }
+    },
+    "iavm_notices": {
+      "type": "array",
+      "description": "IAVM notice metadata. Present only when --iavm-file is used and the rule's cve_ids match a notice.",
+      "items": {
+        "type": "object",
+        "required": ["iavm_number", "iavm_severity", "iavm_title"],
+        "properties": {
+          "iavm_number": {
+            "type": "string",
+            "description": "DISA IAVM notice number."
+          },
+          "iavm_severity": {
+            "type": "string",
+            "enum": ["CAT I", "CAT II", "CAT III"],
+            "description": "DISA severity category."
+          },
+          "iavm_title": {
+            "type": "string",
+            "description": "IAVM notice title."
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}

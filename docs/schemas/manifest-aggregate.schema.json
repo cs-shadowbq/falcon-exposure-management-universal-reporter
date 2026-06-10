@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/falcon-exposure-management-universal-reporter/schemas/manifest-aggregate.schema.json",
+  "version": "1.0.0",
+  "title": "FEMUR Aggregate Manifest (Bucketed Output)",
+  "description": "Schema for the top-level manifest.json in the by_aid/ directory when using --bucket-by-aid. Summarizes the entire bucketed export run.",
+  "type": "object",
+  "required": ["generated_at", "total_aids", "aid_directories"],
+  "properties": {
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp (with timezone) when the export run started."
+    },
+    "app_name": {
+      "type": "string",
+      "const": "falcon-exposure-management-universal-reporter",
+      "description": "Application identifier."
+    },
+    "app_version": {
+      "type": "string",
+      "description": "Application version (semver)."
+    },
+    "command": {
+      "type": "string",
+      "description": "Full CLI command with arguments used to generate this output."
+    },
+    "total_aids": {
+      "type": "integer",
+      "description": "Total number of unique AIDs (hosts) in this export."
+    },
+    "aid_directories": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Sorted list of AID directory names created in this export."
+    },
+    "iavm_date_generated": {
+      "type": "string",
+      "format": "date",
+      "description": "Date the IAVM cross-reference XML was generated. Present only when --iavm-file is used."
+    },
+    "iavm_summary": {
+      "type": "object",
+      "description": "Aggregate IAVM notice counts by severity across all hosts. Present only when --iavm-file is used and matches exist.",
+      "properties": {
+        "CAT I": {
+          "type": "integer",
+          "description": "Total CAT I (Critical) IAVM notices across all hosts."
+        },
+        "CAT II": {
+          "type": "integer",
+          "description": "Total CAT II (High) IAVM notices across all hosts."
+        },
+        "CAT III": {
+          "type": "integer",
+          "description": "Total CAT III (Medium/Low) IAVM notices across all hosts."
+        }
+      },
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "iavm_aids_affected": {
+      "type": "integer",
+      "description": "Number of AIDs that have at least one IAVM notice match. Present only when --iavm-file is used."
+    }
+  },
+  "additionalProperties": true
+}

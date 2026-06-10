@@ -1,0 +1,117 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FEMUR Per-AID Manifest XML Schema
+  Validates: manifest-\-{cid}-\-{aid}-\-{epoch}.xml in each AID subdirectory
+  Root element: <manifest>
+  Contains run metadata and record counts for a single host.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:femur:schema:manifest-by-aid:1.0.0" xmlns="urn:femur:schema:manifest-by-aid:1.0.0" elementFormDefault="qualified" version="1.0.0">
+
+  <!-- Reusable type: IAVM severity summary counts -->
+  <xs:complexType name="iavmSummaryType">
+    <xs:annotation>
+      <xs:documentation>
+        IAVM notice counts by DISA severity category for this host.
+        Present only when --iavm-file is used and matches exist.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="CAT_I" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Count of CAT I (Critical) IAVM notices.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="CAT_II" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Count of CAT II (High) IAVM notices.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="CAT_III" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Count of CAT III (Medium/Low) IAVM notices.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Reusable type: dataset record counts -->
+  <xs:complexType name="countsType">
+    <xs:annotation>
+      <xs:documentation>
+        Record counts per dataset for this export.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="host_map" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Number of host map entries (typically 1 per AID).</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="assessments" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Number of SCA/STIG assessment records.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="vulnerabilities" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Number of vulnerability records.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="applications" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Number of application inventory records.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Root element -->
+  <xs:element name="manifest">
+    <xs:annotation>
+      <xs:documentation>
+        Per-AID manifest containing run metadata and record counts.
+        Produced in each AID subdirectory when using --bucket-by-aid.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:complexType>
+      <xs:all>
+        <xs:element name="generated_at" type="xs:string">
+          <xs:annotation>
+            <xs:documentation>ISO 8601 timestamp (with timezone) when the export run started.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="counts" type="countsType">
+          <xs:annotation>
+            <xs:documentation>Record counts per dataset for this specific AID.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="app_name" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Application identifier: "falcon-exposure-management-universal-reporter".</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="app_version" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Application version (semver).</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="command" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Full CLI command with arguments used to generate this output.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="iavm_date_generated" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Date the IAVM cross-reference XML was generated. Present only when --iavm-file is used.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="iavm_summary" type="iavmSummaryType" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>IAVM notice counts by severity for this host.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

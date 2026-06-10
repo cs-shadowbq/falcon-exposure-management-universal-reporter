@@ -1,0 +1,105 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/falcon-exposure-management-universal-reporter/schemas/applications.schema.json",
+  "version": "1.0.0",
+  "title": "FEMUR Application Record",
+  "description": "Schema for a single application record in the applications JSONL output. Each line in applications.jsonl conforms to this schema.",
+  "type": "object",
+  "required": ["id"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique application record identifier."
+    },
+    "cid": {
+      "type": "string",
+      "description": "CrowdStrike Customer ID (CID) that owns this host."
+    },
+    "name": {
+      "type": "string",
+      "description": "Application name as reported by the Falcon sensor."
+    },
+    "vendor": {
+      "type": "string",
+      "description": "Application vendor as reported by the Falcon sensor."
+    },
+    "version": {
+      "type": "string",
+      "description": "Application version string."
+    },
+    "software_type": {
+      "type": "string",
+      "description": "Type of software (e.g. 'application')."
+    },
+    "name_vendor": {
+      "type": "string",
+      "description": "Combined name and vendor identifier used for deduplication."
+    },
+    "name_vendor_version": {
+      "type": "string",
+      "description": "Combined name, vendor, and version identifier."
+    },
+    "versioning_scheme": {
+      "type": "string",
+      "description": "Detected versioning scheme (e.g. 'semver', 'unknown')."
+    },
+    "groups": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Host group IDs this application's host belongs to."
+    },
+    "category": {
+      "type": "string",
+      "description": "Application category (e.g. 'browser', 'security')."
+    },
+    "architectures": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Supported architectures (e.g. ['x64'], ['amd64'])."
+    },
+    "first_seen_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the application was first observed."
+    },
+    "last_updated_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of the most recent update to this record."
+    },
+    "is_suspicious": {
+      "type": "boolean",
+      "description": "Whether the application has been flagged as suspicious."
+    },
+    "is_normalized": {
+      "type": "boolean",
+      "description": "Whether vendor/product names have been normalized by the API."
+    },
+    "host": {
+      "type": "object",
+      "description": "Host reference containing the Discover host ID.",
+      "required": ["id"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Discover-internal host identifier."
+        }
+      }
+    },
+    "aid": {
+      "type": "string",
+      "description": "Falcon Agent ID. Present when --decorate-aids or --bucket-by-aid is used."
+    },
+    "cpe": {
+      "type": "string",
+      "description": "Generated CPE 2.3 URI for this application. Always present in pipeline output.",
+      "pattern": "^cpe:2\\.3:[aho]:"
+    },
+    "cpe_match_type": {
+      "type": "string",
+      "enum": ["generated"],
+      "description": "How the CPE was derived. Currently always 'generated' (deterministic from record fields)."
+    }
+  },
+  "additionalProperties": true
+}

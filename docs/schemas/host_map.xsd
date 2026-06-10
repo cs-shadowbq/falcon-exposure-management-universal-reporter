@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FEMUR Host Map XML Schema
+  Validates: host_map.xml (flat) and host_map-\-{cid}-\-{aid}-\-{epoch}.xml (bucketed)
+  Root element: <host_map>
+  Each <record> maps a Discover host ID to a Falcon Agent ID.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:femur:schema:host_map:1.0.0" xmlns="urn:femur:schema:host_map:1.0.0" elementFormDefault="qualified" version="1.0.0">
+
+  <xs:element name="host_map">
+    <xs:annotation>
+      <xs:documentation>
+        Root element containing zero or more host map records.
+        Each record maps a CrowdStrike Discover host ID to a Falcon Agent ID (AID).
+      </xs:documentation>
+    </xs:annotation>
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="record" type="hostMapRecordType"
+                    minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <xs:complexType name="hostMapRecordType">
+    <xs:annotation>
+      <xs:documentation>
+        A single host map record. All three fields are required.
+        No additional properties are permitted in this dataset.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="_host_map_id" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>
+            Discover-internal host identifier (composite key used by the Discover API).
+          </xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="cid" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>
+            CrowdStrike Customer ID (CID).
+          </xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="aid" type="xs:string">
+        <xs:annotation>
+          <xs:documentation>
+            Falcon Agent ID (device_id). The primary key used across all datasets.
+          </xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+</xs:schema>

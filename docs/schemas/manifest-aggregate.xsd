@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  FEMUR Aggregate Manifest XML Schema
+  Validates: by_aid/manifest.xml (top-level manifest in bucketed output)
+  Root element: <manifest>
+  Contains run metadata, total AID count, directory listing, and IAVM summary.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" targetNamespace="urn:femur:schema:manifest-aggregate:1.0.0" xmlns="urn:femur:schema:manifest-aggregate:1.0.0" elementFormDefault="qualified" version="1.0.0">
+
+  <!-- Reusable type: IAVM severity summary counts -->
+  <xs:complexType name="iavmSummaryType">
+    <xs:annotation>
+      <xs:documentation>
+        Aggregate IAVM notice counts by DISA severity category across all hosts.
+        Present only when --iavm-file is used and matches exist.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:all>
+      <xs:element name="CAT_I" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Count of CAT I (Critical) IAVM notices across all hosts.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="CAT_II" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Count of CAT II (High) IAVM notices across all hosts.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+      <xs:element name="CAT_III" type="xs:string" minOccurs="0">
+        <xs:annotation>
+          <xs:documentation>Count of CAT III (Medium/Low) IAVM notices across all hosts.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:all>
+  </xs:complexType>
+
+  <!-- Type: array of AID directory names -->
+  <xs:complexType name="aidDirectoriesType">
+    <xs:annotation>
+      <xs:documentation>
+        Sorted list of AID directory names created during bucketed export.
+        Each item element contains a single AID string.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:sequence>
+      <xs:element name="item" type="xs:string" minOccurs="0" maxOccurs="unbounded">
+        <xs:annotation>
+          <xs:documentation>Falcon Agent ID used as directory name.</xs:documentation>
+        </xs:annotation>
+      </xs:element>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- Root element -->
+  <xs:element name="manifest">
+    <xs:annotation>
+      <xs:documentation>
+        Aggregate manifest for bucketed output (--bucket-by-aid).
+        Located at by_aid/manifest.xml, contains the master index of all AID directories.
+      </xs:documentation>
+    </xs:annotation>
+    <xs:complexType>
+      <xs:all>
+        <xs:element name="generated_at" type="xs:string">
+          <xs:annotation>
+            <xs:documentation>ISO 8601 timestamp (with timezone) when the export run started.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="total_aids" type="xs:string">
+          <xs:annotation>
+            <xs:documentation>Total number of unique AIDs (hosts) in this export.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="aid_directories" type="aidDirectoriesType">
+          <xs:annotation>
+            <xs:documentation>Sorted list of AID directory names.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="app_name" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Application identifier: "falcon-exposure-management-universal-reporter".</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="app_version" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Application version (semver).</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="command" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Full CLI command with arguments used to generate this output.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="iavm_date_generated" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Date the IAVM cross-reference XML was generated.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="iavm_summary" type="iavmSummaryType" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Aggregate IAVM notice counts by severity across all hosts.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+        <xs:element name="iavm_aids_affected" type="xs:string" minOccurs="0">
+          <xs:annotation>
+            <xs:documentation>Number of hosts with at least one IAVM notice match.</xs:documentation>
+          </xs:annotation>
+        </xs:element>
+      </xs:all>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

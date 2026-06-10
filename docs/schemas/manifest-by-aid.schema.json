@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/falcon-exposure-management-universal-reporter/schemas/manifest-by-aid.schema.json",
+  "version": "1.0.0",
+  "title": "FEMUR Per-AID Manifest",
+  "description": "Schema for the manifest produced in each per-AID subdirectory when using --bucket-by-aid. File is named manifest--{cid}--{aid}--{epoch}.json.",
+  "type": "object",
+  "required": ["generated_at", "counts"],
+  "properties": {
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp (with timezone) when the export run started."
+    },
+    "app_name": {
+      "type": "string",
+      "const": "falcon-exposure-management-universal-reporter",
+      "description": "Application identifier."
+    },
+    "app_version": {
+      "type": "string",
+      "description": "Application version (semver)."
+    },
+    "command": {
+      "type": "string",
+      "description": "Full CLI command with arguments used to generate this output."
+    },
+    "counts": {
+      "type": "object",
+      "description": "Record counts per dataset for this specific AID.",
+      "properties": {
+        "applications": {
+          "type": "integer",
+          "description": "Number of application records for this host."
+        },
+        "vulnerabilities": {
+          "type": "integer",
+          "description": "Number of vulnerability records for this host."
+        },
+        "assessments": {
+          "type": "integer",
+          "description": "Number of assessment records for this host."
+        },
+        "host_map": {
+          "type": "integer",
+          "description": "Number of host map entries (typically 1)."
+        }
+      },
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "iavm_date_generated": {
+      "type": "string",
+      "format": "date",
+      "description": "Date the IAVM cross-reference XML was generated. Present only when --iavm-file is used."
+    },
+    "iavm_summary": {
+      "type": "object",
+      "description": "IAVM notice counts by severity for this host. Present only when --iavm-file is used and matches exist.",
+      "properties": {
+        "CAT I": {
+          "type": "integer",
+          "description": "Count of CAT I (Critical) IAVM notices affecting this host."
+        },
+        "CAT II": {
+          "type": "integer",
+          "description": "Count of CAT II (High) IAVM notices affecting this host."
+        },
+        "CAT III": {
+          "type": "integer",
+          "description": "Count of CAT III (Medium/Low) IAVM notices affecting this host."
+        }
+      },
+      "additionalProperties": {
+        "type": "integer"
+      }
+    }
+  },
+  "additionalProperties": true
+}

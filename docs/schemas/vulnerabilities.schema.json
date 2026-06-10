@@ -1,0 +1,164 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/falcon-exposure-management-universal-reporter/schemas/vulnerabilities.schema.json",
+  "version": "1.0.0",
+  "title": "FEMUR Vulnerability Record",
+  "description": "Schema for a single vulnerability record in the vulnerabilities JSONL output. Each line in vulnerabilities.jsonl conforms to this schema.",
+  "type": "object",
+  "required": ["id", "cid", "aid", "vulnerability_id", "status"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique vulnerability finding identifier (composite key of aid + vulnerability metadata)."
+    },
+    "cid": {
+      "type": "string",
+      "description": "CrowdStrike Customer ID (CID)."
+    },
+    "aid": {
+      "type": "string",
+      "description": "Falcon Agent ID of the affected host."
+    },
+    "vulnerability_id": {
+      "type": "string",
+      "description": "Vulnerability identifier. CVE format (e.g. 'CVE-2024-0741') or CrowdStrike-native (e.g. 'CS-U25-F308859')."
+    },
+    "vulnerability_metadata_id": {
+      "type": "string",
+      "description": "CrowdStrike internal vulnerability metadata ID (e.g. 'CS-V23-5700999')."
+    },
+    "data_providers": {
+      "type": "array",
+      "description": "Sources that reported this vulnerability.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string",
+            "description": "Provider name (e.g. 'Falcon sensor')."
+          }
+        }
+      }
+    },
+    "created_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when the vulnerability was first detected."
+    },
+    "updated_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of the most recent update."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["open", "reopen", "closed"],
+      "description": "Current vulnerability status."
+    },
+    "apps": {
+      "type": "array",
+      "description": "Affected applications on this host.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "vendor_normalized": {
+            "type": "string",
+            "description": "Normalized vendor name."
+          },
+          "product_name_version": {
+            "type": "string",
+            "description": "Product name and version combined."
+          },
+          "product_name_normalized": {
+            "type": "string",
+            "description": "Normalized product name."
+          },
+          "sub_status": {
+            "type": "string",
+            "description": "Per-app vulnerability sub-status."
+          },
+          "remediation": {
+            "type": "object",
+            "properties": {
+              "ids": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Remediation entity IDs."
+              }
+            }
+          },
+          "evaluation_logic": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Evaluation logic identifier."
+              }
+            }
+          },
+          "remediation_info": {
+            "type": "object",
+            "properties": {
+              "recommended_id": {
+                "type": "string",
+                "description": "Recommended remediation ID."
+              },
+              "minimum_id": {
+                "type": "string",
+                "description": "Minimum required remediation ID."
+              }
+            }
+          }
+        }
+      }
+    },
+    "suppression_info": {
+      "type": "object",
+      "description": "Vulnerability suppression state.",
+      "properties": {
+        "is_suppressed": {
+          "type": "boolean",
+          "description": "Whether the vulnerability has been suppressed by an analyst."
+        }
+      }
+    },
+    "confidence": {
+      "type": "string",
+      "description": "Detection confidence level (e.g. 'confirmed')."
+    },
+    "cve": {
+      "type": "object",
+      "description": "CVE metadata object.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "CVE identifier (mirrors vulnerability_id)."
+        }
+      }
+    },
+    "iavm_notices": {
+      "type": "array",
+      "description": "IAVM notice metadata. Present only when --iavm-file is used and a matching notice exists for this CVE.",
+      "items": {
+        "type": "object",
+        "required": ["iavm_number", "iavm_severity", "iavm_title"],
+        "properties": {
+          "iavm_number": {
+            "type": "string",
+            "description": "DISA IAVM notice number (e.g. '2024-T-0012')."
+          },
+          "iavm_severity": {
+            "type": "string",
+            "enum": ["CAT I", "CAT II", "CAT III"],
+            "description": "DISA severity category."
+          },
+          "iavm_title": {
+            "type": "string",
+            "description": "IAVM notice title."
+          }
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}
