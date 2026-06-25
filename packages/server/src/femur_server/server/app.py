@@ -7,6 +7,8 @@ a factory string::
     uvicorn femur_server.server.app:create_app --factory
 """
 
+from __future__ import annotations
+
 import logging
 import os
 from contextlib import asynccontextmanager

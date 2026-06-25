@@ -4,16 +4,16 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "falcon-exposure-management-universal-reporter"
-version = "2.0.0"
+version = "2.0.1"
 description = "CrowdStrike Falcon higher-level API library for application, vulnerability, and assessment inventory"
-readme = {text = "CrowdStrike Falcon higher-level API library for application, vulnerability, and assessment inventory", content-type = "text/plain"}
+readme = { text = "CrowdStrike Falcon higher-level API library for application, vulnerability, and assessment inventory", content-type = "text/plain" }
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 authors = [{ name = "Scott MacGregor" }]
 
 dependencies = [
-    "crowdstrike-falconpy>=1.6.1",
-    "rich>=13.0.0",
+    "crowdstrike-falconpy>=1.6.3",
+    "rich>=14.2.0",
     "python-dotenv>=1.0.0",
 ]
 

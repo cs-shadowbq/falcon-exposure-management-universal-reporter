@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "femur-pipeline"
-version = "2.0.0"
+version = "2.0.1"
 description = "Streaming data pipeline, transforms, and output sinks for Falcon inventory data"
 readme = {text = "Streaming data pipeline, transforms, and output sinks for Falcon inventory data", content-type = "text/plain"}
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 authors = [{ name = "Scott MacGregor" }]
 
 dependencies = ["defusedxml>=0.7.1"]

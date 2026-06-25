@@ -7,11 +7,11 @@ packages = []
 
 [project]
 name = "falcon-exposure-management-universal-reporter-workspace"
-version = "2.0.0"
+version = "2.0.1"
 description = "Workspace for Falcon Exposure Management universal reporter packages. Python tool to export CrowdStrike FEM data at scale."
 readme = "README.md"
 license = { file = "LICENSE" }
-requires-python = ">=3.10"
+requires-python = ">=3.9"
 authors = [
     { name = "Scott MacGregor", email = "scott.macgregor@crowdstrike.com" },
 ]
@@ -67,7 +67,7 @@ skip_covered = false
 directory = "htmlcov"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.9"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = false

@@ -4,6 +4,8 @@ Dependencies are injected via ``Depends()`` in controller signatures
 so that controllers never access ``app.state`` directly.
 """
 
+from __future__ import annotations
+
 from fastapi import HTTPException, Request
 
 from .jobs import FetchJob
