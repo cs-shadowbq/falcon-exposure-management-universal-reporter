@@ -380,6 +380,112 @@ class TestLoggingFlags:
         )
 
 
+class TestScopeFilters:
+    """--host-groups / --tags are resolved and applied additively per dataset."""
+
+    def test_tags_applied_to_all_three_datasets(self, tmp_path):
+        out = str(tmp_path / "out.json")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=[]) as m_app,
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=[]) as m_vuln,
+            patch(
+                "femur_cli._fetchers.iter_assessments_by_severity", return_value=[]
+            ) as m_asmt,
+        ):
+            main(["--output", out, "--tags", "Monkey,heartbeat"])
+
+        # Applications + Assessments use host.tags; Spotlight uses host_info.tags.
+        assert m_app.call_args[1]["fql_filter"] == (
+            "host.tags:['FalconGroupingTags/Monkey','FalconGroupingTags/heartbeat']"
+        )
+        assert m_asmt.call_args[1]["fql_filter"] == (
+            "created_timestamp:>='2000-01-01T00:00:00Z'"
+            "+host.tags:['FalconGroupingTags/Monkey','FalconGroupingTags/heartbeat']"
+        )
+        assert m_vuln.call_args[1]["fql_filter"] == (
+            "status:['open','reopen']"
+            "+host_info.tags:['FalconGroupingTags/Monkey','FalconGroupingTags/heartbeat']"
+        )
+
+    def test_host_groups_resolved_to_ids_for_vuln_and_assessment(self, tmp_path):
+        out = str(tmp_path / "out.json")
+        resolved = {"Cloud Lab": "dfba0b1b823e46409f069711d151be0c"}
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch(
+                "femur_cli.cli.resolve_group_names_to_ids",
+                return_value=(resolved, []),
+            ) as m_resolve,
+            patch("femur_cli._fetchers.iter_applications", return_value=[]) as m_app,
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=[]) as m_vuln,
+            patch(
+                "femur_cli._fetchers.iter_assessments_by_severity", return_value=[]
+            ) as m_asmt,
+        ):
+            main(["--output", out, "--host-groups", "Cloud Lab"])
+
+        m_resolve.assert_called_once()
+        # Discover filters by NAME.
+        assert m_app.call_args[1]["fql_filter"] == "host.groups:['Cloud Lab']"
+        # Spotlight + Assessment filter by resolved ID.
+        assert m_vuln.call_args[1]["fql_filter"] == (
+            "status:['open','reopen']"
+            "+host_info.groups:['dfba0b1b823e46409f069711d151be0c']"
+        )
+        assert m_asmt.call_args[1]["fql_filter"] == (
+            "created_timestamp:>='2000-01-01T00:00:00Z'"
+            "+host.groups:['dfba0b1b823e46409f069711d151be0c']"
+        )
+
+    def test_scope_is_additive_to_user_filter(self, tmp_path):
+        out = str(tmp_path / "out.json")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=[]) as m_app,
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=[]),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=[]),
+        ):
+            main([
+                "--output", out,
+                "--app-filter", "host.platform_name:'Linux'",
+                "--tags", "Monkey",
+            ])
+
+        assert m_app.call_args[1]["fql_filter"] == (
+            "host.platform_name:'Linux'+host.tags:['FalconGroupingTags/Monkey']"
+        )
+
+    def test_missing_group_name_exits_1(self, tmp_path):
+        out = str(tmp_path / "out.json")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch(
+                "femur_cli.cli.resolve_group_names_to_ids",
+                return_value=({}, ["Nonexistent"]),
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main(["--output", out, "--host-groups", "Nonexistent"])
+        assert exc_info.value.code == 1
+
+    def test_no_resolution_call_when_only_tags(self, tmp_path):
+        out = str(tmp_path / "out.json")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch(
+                "femur_cli.cli.resolve_group_names_to_ids",
+                return_value=({}, []),
+            ) as m_resolve,
+            patch("femur_cli._fetchers.iter_applications", return_value=[]),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=[]),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=[]),
+        ):
+            main(["--output", out, "--tags", "Monkey"])
+
+        m_resolve.assert_not_called()
+
+
 class TestVulnWorkers:
     def test_default_uses_serial_iter(self, tmp_path):
         """Without --vuln-workers, iter_vulnerabilities is used (not parallel)."""
@@ -626,3 +732,170 @@ class TestApplicationParallel:
 
         _, kwargs = mock_mac_buckets.call_args
         assert kwargs.get("fql_filter") == "host.platform_name:'Linux'"
+
+
+class TestLargeEnv:
+    """--large-env promotes the best-practice large-environment recipe."""
+
+    def test_routes_through_all_large_env_strategies(self, tmp_path):
+        """--large-env selects MAC-bucket apps, severity-bucket vulns, cross-flat assessments."""
+        out_dir = str(tmp_path / "inv")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch(
+                "femur_cli._fetchers.iter_applications_mac_buckets", return_value=APPS
+            ) as m_mac,
+            patch(
+                "femur_cli._fetchers.iter_applications", return_value=APPS
+            ) as m_app_serial,
+            patch(
+                "femur_cli._fetchers.iter_vulnerabilities_by_severity", return_value=VULNS
+            ) as m_vuln_sev,
+            patch(
+                "femur_cli._fetchers.iter_assessments_cross_flat", return_value=ASSESSMENTS
+            ) as m_asmt_cross,
+            patch(
+                "femur_cli._fetchers.iter_assessments_by_severity", return_value=ASSESSMENTS
+            ) as m_asmt_sev,
+        ):
+            main(["--large-env", "--skip-host-map", "--output-dir", out_dir])
+
+        m_mac.assert_called_once()
+        m_app_serial.assert_not_called()
+        m_vuln_sev.assert_called_once()
+        m_asmt_cross.assert_called_once()
+        m_asmt_sev.assert_not_called()
+
+    def test_defaults_to_jsonl_output(self, tmp_path):
+        """Without an explicit --output-format, --large-env streams JSONL files."""
+        out_dir = str(tmp_path / "inv")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications_mac_buckets", return_value=APPS),
+            patch("femur_cli._fetchers.iter_vulnerabilities_by_severity", return_value=VULNS),
+            patch("femur_cli._fetchers.iter_assessments_cross_flat", return_value=ASSESSMENTS),
+        ):
+            main(["--large-env", "--skip-host-map", "--output-dir", out_dir])
+
+        assert (tmp_path / "inv" / "applications.jsonl").exists()
+        assert (tmp_path / "inv" / "vulnerabilities.jsonl").exists()
+        assert (tmp_path / "inv" / "assessments.jsonl").exists()
+
+    def test_explicit_output_format_json_is_respected(self, tmp_path):
+        """--large-env --output-format json keeps the monolithic JSON path."""
+        out = str(tmp_path / "out.json")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications_mac_buckets", return_value=APPS),
+            patch("femur_cli._fetchers.iter_vulnerabilities_by_severity", return_value=VULNS),
+            patch("femur_cli._fetchers.iter_assessments_cross_flat", return_value=ASSESSMENTS),
+        ):
+            main(["--large-env", "--skip-host-map", "--output-format", "json", "--output", out])
+
+        # Monolithic JSON file written, not a JSONL directory.
+        with open(out) as fh:
+            payload = json.load(fh)
+        assert payload["applications"] == APPS
+
+    def test_skip_host_map_disables_implied_decoration(self, tmp_path):
+        """--large-env --skip-host-map leaves decorate-aids off (no host map)."""
+        from femur_cli.parser import build_parser
+        from femur_cli.cli import _expand_large_env
+
+        args = build_parser().parse_args(["--large-env", "--skip-host-map"])
+        _expand_large_env(args)
+        assert args.decorate_aids is False
+        assert args.app_large_env is True
+        assert args.worker_by_severity is True
+        assert args.assessment_large_env is True
+        assert args.output_format == "jsonl"
+
+    def test_enables_decoration_when_host_map_available(self):
+        """--large-env alone enables decorate-aids (host map present)."""
+        from femur_cli.parser import build_parser
+        from femur_cli.cli import _expand_large_env
+
+        args = build_parser().parse_args(["--large-env"])
+        _expand_large_env(args)
+        assert args.decorate_aids is True
+
+
+class TestPartialManifest:
+    """A streaming dataset that fails mid-stream is flagged partial in the manifest."""
+
+    def test_failed_streaming_dataset_marked_partial(self, tmp_path):
+        from femur._exceptions import FalconAPIError
+
+        out_dir = str(tmp_path / "inv")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=APPS),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=VULNS),
+            patch(
+                "femur_cli._fetchers.iter_assessments_by_severity",
+                side_effect=FalconAPIError("query_combined_assessments", 204, []),
+            ),
+        ):
+            main(["--output-format", "jsonl", "--skip-host-map", "--output-dir", out_dir])
+
+        with open(tmp_path / "inv" / "manifest.json") as fh:
+            manifest = json.load(fh)
+
+        assert manifest["partial"] == ["assessments"]
+        assert any(e["dataset"] == "assessments" for e in manifest["errors"])
+
+    def test_no_partial_key_when_all_succeed(self, tmp_path):
+        out_dir = str(tmp_path / "inv")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=APPS),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=VULNS),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=ASSESSMENTS),
+        ):
+            main(["--output-format", "jsonl", "--skip-host-map", "--output-dir", out_dir])
+
+        with open(tmp_path / "inv" / "manifest.json") as fh:
+            manifest = json.load(fh)
+
+        assert "partial" not in manifest
+        assert "errors" not in manifest
+
+
+class TestParserGrouping:
+    """Guard against a botched argument-group refactor."""
+
+    def test_large_env_flag_parses(self):
+        from femur_cli.parser import build_parser
+
+        args = build_parser().parse_args(["--large-env"])
+        assert args.large_env is True
+
+    def test_output_format_default_is_none_sentinel(self):
+        from femur_cli.parser import build_parser
+
+        # Parser leaves output_format as None so the CLI can detect an
+        # explicit override; _expand_large_env resolves it.
+        args = build_parser().parse_args([])
+        assert args.output_format is None
+
+    def test_all_known_flags_still_parse(self):
+        from femur_cli.parser import build_parser
+
+        args = build_parser().parse_args([
+            "--env-file", "x.env", "--output", "o.json",
+            "--output-format", "xml", "--output-dir", "d",
+            "--app-filter", "a", "--vuln-filter", "v", "--assessment-filter", "s",
+            "--host-groups", "G", "--tags", "T",
+            "--large-env", "--app-large-env", "--worker-by-severity",
+            "--vuln-workers", "8", "--assessment-large-env",
+            "--decorate-aids", "--iavm-file", "i.xml", "--assessment-evidence",
+            "--vuln-facet", "cve", "--no-assessment-compliance-mapping",
+            "--skip-host-map", "--bucket-by-aid", "--compress",
+            "--compressed-by-aid", "--indent", "0", "--verbose",
+            "--log-file", "l.log",
+        ])
+        assert args.output_format == "xml"
+        assert args.vuln_workers == 8
+        assert args.assessment_compliance_mapping is False
+        assert args.compressed is True
+

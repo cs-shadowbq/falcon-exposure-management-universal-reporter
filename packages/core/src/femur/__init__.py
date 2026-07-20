@@ -14,6 +14,12 @@ For the REST API server, install ``femur-server``.
 from ._auth import load_credentials
 from ._exceptions import FalconAPIError
 from ._pagination import build_fql
+from .filters import (
+    augment_filter,
+    build_scope_clause,
+    normalize_tag,
+    DATASET_SCOPE_FIELDS,
+)
 from .configuration import (
     get_all_assessments,
     get_evaluation_logic,
@@ -38,6 +44,7 @@ from .host_groups import (
     get_host_group_ids,
     iter_group_members,
     iter_host_groups,
+    resolve_group_names_to_ids,
 )
 from ._post_process import (
     assemble_inventory_payload,
@@ -60,6 +67,10 @@ __all__ = [
     "FalconAPIError",
     # Utilities
     "build_fql",
+    "augment_filter",
+    "build_scope_clause",
+    "normalize_tag",
+    "DATASET_SCOPE_FIELDS",
     # Discover
     "iter_hosts",
     "get_all_hosts",
@@ -89,6 +100,7 @@ __all__ = [
     "iter_group_members",
     "get_all_group_members",
     "get_host_group_ids",
+    "resolve_group_names_to_ids",
     # Post-processing
     "strip_compliance_mappings",
     "collect_fetch_errors",

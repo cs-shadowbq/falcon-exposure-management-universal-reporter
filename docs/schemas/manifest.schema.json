@@ -56,11 +56,21 @@
       "description": "Date the IAVM cross-reference XML was generated. Present only when --iavm-file is used."
     },
     "errors": {
-      "type": "object",
-      "description": "Fetch errors by dataset. Present only when one or more datasets failed to fetch.",
-      "additionalProperties": {
-        "type": "string"
+      "type": "array",
+      "description": "Fetch errors, present only when one or more datasets failed to fetch. Each entry names the dataset and the error message.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "dataset": { "type": "string" },
+          "error": { "type": "string" }
+        },
+        "required": ["dataset", "error"]
       }
+    },
+    "partial": {
+      "type": "array",
+      "description": "Datasets whose counts are incomplete because the fetch aborted mid-stream after partial records had already been written. Present only when one or more streaming datasets failed. Treat these datasets' counts as a lower bound, not a final total.",
+      "items": { "type": "string" }
     }
   },
   "additionalProperties": true

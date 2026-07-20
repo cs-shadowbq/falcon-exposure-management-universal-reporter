@@ -57,7 +57,7 @@ Example workflow::
     ))
 """
 
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from falconpy import HostGroup
 
@@ -228,3 +228,53 @@ def get_host_group_ids(
             **kwargs,
         )
     )
+
+
+def resolve_group_names_to_ids(
+    credentials: dict,
+    names: List[str],
+) -> Tuple[Dict[str, str], List[str]]:
+    """Resolve host group *names* to their group IDs.
+
+    Spotlight and Configuration Assessment queries filter on group **ID**,
+    whereas Discover filters on group **name**.  The CLI accepts group names
+    only (see ``--host-groups``); this helper looks up the corresponding IDs
+    so the same user input can drive all three datasets.
+
+    A single ``query_combined_host_groups`` call is made with a comma-joined
+    ``name:*'A',name:*'B'`` FQL OR-expression so the lookup costs one request
+    regardless of how many names are supplied.  The ``:*`` (exact-match)
+    operator is required — the Host Group API's ``name`` field does not match
+    with the plain ``:`` operator, and it does not accept a ``[...]`` array —
+    so each name becomes its own ``name:*'...'`` clause.  Matching is
+    case-sensitive and exact.
+
+    Args:
+        credentials: Dict with ``client_id``, ``client_secret``, ``base_url``.
+        names: Host group display names, e.g. ``["Cloud-Lab", "COAMS"]``.
+
+    Returns:
+        A ``(resolved, missing)`` tuple where *resolved* maps each found name
+        to its group ID and *missing* lists any names with no matching group.
+
+    Raises:
+        :class:`~femur.FalconAPIError`: On API errors.
+    """
+    wanted = [n for n in (name.strip() for name in names) if n]
+    if not wanted:
+        return {}, []
+
+    # One request. The name field requires the exact-match ``:*`` operator and
+    # rejects ``name:[...]`` arrays, so OR the per-name clauses with ``,``.
+    # Escape any single quotes in names.
+    fql = ",".join("name:*'" + n.replace("'", "\\'") + "'" for n in wanted)
+
+    resolved: Dict[str, str] = {}
+    for group in get_all_host_groups(credentials, fql_filter=fql):
+        name = group.get("name")
+        gid = group.get("id")
+        if name and gid and name not in resolved:
+            resolved[name] = gid
+
+    missing = [n for n in wanted if n not in resolved]
+    return resolved, missing

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "femur-cli"
-version = "2.0.1"
+version = "2.1.0"
 description = "CrowdStrike Falcon exposure management universal reporter CLI tool"
 readme = { text = "CrowdStrike Falcon exposure management universal reporter CLI tool", content-type = "text/plain" }
 license = { text = "MIT" }

@@ -194,6 +194,9 @@ femur -e crowdstrike.env --output-format jsonl --output-dir ./inventory
 # With parallel vulnerability fetch (faster for large envs)
 femur -e crowdstrike.env --vuln-workers 8 --output-format jsonl --output-dir ./inventory
 
+# Scope every dataset to host groups and/or grouping tags (additive to any FQL filter)
+femur -e crowdstrike.env --host-groups "Production Servers,Development" --tags "Monkey,heartbeat"
+
 # XML output for SOAP/CMRS ingestors
 femur -e crowdstrike.env --output-format xml --output-dir ./inventory_xml
 ```
@@ -260,12 +263,29 @@ FEMUR includes several parallelism strategies for environments with hundreds of 
 
 | Flag | Strategy | Best For |
 |------|----------|----------|
+| `--large-env` | **Promoted recipe** — all strategies below + JSONL streaming + AID decoration | **Recommended starting point for big envs** |
 | `--vuln-workers N` | Two-phase: scan IDs then fetch N-way parallel | >100k vulnerabilities |
 | `--worker-by-severity` | Five parallel severity-bucket streams | Broad vulnerability distributions |
 | `--app-large-env` | MAC-address OUI bucket parallelism (16 threads) | >200k applications |
 | `--assessment-large-env` | Status x severity cross-product (30 threads) | >1M assessment findings |
 
-All strategies work with streaming output formats (JSONL, XML) for bounded-memory operation. Combine with data enrichment for a full production run:
+The simplest way to run a large environment is the promoted `--large-env` flag, which
+bundles the best-practice recipe (enables `--app-large-env`, `--worker-by-severity`,
+`--assessment-large-env`; streams to JSONL for bounded memory unless you set
+`--output-format` explicitly; and enables `--decorate-aids` unless `--skip-host-map`
+is set):
+
+```bash
+femur -e crowdstrike.env --large-env --output-dir ./inventory
+```
+
+Add enrichment such as IAVM decoration on top as needed:
+
+```bash
+femur -e crowdstrike.env --large-env --output-dir ./inventory --iavm-file path/to/cvexref.xml
+```
+
+The individual strategy flags remain available if you want to tune them independently:
 
 ```bash
 femur -e crowdstrike.env \
@@ -277,6 +297,13 @@ femur -e crowdstrike.env \
     --iavm-file path/to/cvexref.xml \
     --decorate-aids
 ```
+
+> **Note on partial results.** Under high concurrency the API can occasionally return
+> a transient empty body (HTTP 204) or a burst of 5xx errors. FEMUR retries these with
+> exponential back-off. If a streaming dataset still fails after retries, any records
+> already written for it are **partial** — the run records the affected datasets under
+> the `partial` and `errors` keys in `manifest.json`. Treat a partial dataset's count
+> as a lower bound and re-run to obtain a complete dataset.
 
 ## Output Formats
 
@@ -339,60 +366,93 @@ Compression is parallelized across AIDs (up to 8 threads) for scale.
 ## Help
 
 ```shell
-usage: femur [-h] [--env-file FILE] [--output FILE] [--app-filter FQL] [--vuln-filter FQL] [--assessment-filter FQL] [--indent N] [--vuln-workers N]
-             [--vuln-facet FACET] [--worker-by-severity] [--skip-host-map] [--decorate-aids] [--assessment-evidence] [--assessment-large-env] [--app-large-env]
-             [--assessment-compliance-mapping | --no-assessment-compliance-mapping] [--verbose] [--log-file FILE] [--output-format {json,jsonl,xml}] [--output-dir DIR]
-             [--iavm-file FILE] [--bucket-by-aid] [--compress] [--compressed-by-aid]
+usage: femur [-h] [--env-file FILE] [--output FILE] [--output-format {json,jsonl,xml}] [--output-dir DIR] [--app-filter FQL]
+             [--vuln-filter FQL] [--assessment-filter FQL] [--host-groups NAMES] [--tags TAGS] [--large-env] [--app-large-env]
+             [--worker-by-severity] [--vuln-workers N] [--assessment-large-env] [--decorate-aids] [--iavm-file FILE]
+             [--assessment-evidence] [--vuln-facet FACET] [--assessment-compliance-mapping | --no-assessment-compliance-mapping]
+             [--skip-host-map] [--bucket-by-aid] [--compress] [--compressed-by-aid] [--indent N] [--verbose] [--log-file FILE]
 
 Download CrowdStrike Falcon application inventory, vulnerabilities, and configuration assessment results to a single JSON file. All three datasets are fetched concurrently.
 
 options:
   -h, --help            show this help message and exit
+
+Credentials & Output:
+  Where credentials come from and how/where results are written.
+
   --env-file FILE, -e FILE
                         Path to a .env file containing CLIENT_ID, CLIENT_SECRET, and optionally BASE_URL. Environment variables take priority over file values.
   --output FILE, -o FILE
                         Output JSON file path (default: femur_inventory.json).
+  --output-format {json,jsonl,xml}
+                        Output format. 'json' writes a single monolithic JSON file (the original behaviour, requires all data in memory). 'jsonl' writes one JSON-Lines
+                        file per dataset with bounded memory (ideal for large environments + jq exploration). 'xml' writes one XML file per dataset for downstream SOAP
+                        / enterprise ingestors. Note: --large-env selects 'jsonl' unless you set this explicitly. (default: json)
+  --output-dir DIR      Directory for multi-file output formats (jsonl, xml). Created automatically if it does not exist. Ignored when --output-format=json. (default:
+                        derived from --output filename)
+
+Filtering & Scoping:
+  Narrow each dataset with FQL, or scope every dataset by host group / tag.
+
   --app-filter FQL      FQL filter for the Discover applications query, e.g. "host.platform_name:'Windows'".
   --vuln-filter FQL     FQL filter for the Spotlight vulnerabilities query. Pass an empty string to use the library default. (default: "status:['open','reopen']")
   --assessment-filter FQL
                         FQL filter for the Configuration Assessment query, e.g. "finding.status:'fail'". (default: "created_timestamp:>='2000-01-01T00:00:00Z'")
-  --indent N            JSON indentation spaces. Use 0 for compact output (default: 2).
-  --vuln-workers N      Number of parallel workers for the vulnerability fetch. When N > 1 a two-phase strategy is used: first collects all vulnerability IDs (fast),
-                        then fetches full records in N concurrent threads. Recommended: 8. Raise cautiously — the API rate-limits at high concurrency. (default: 1)
-  --vuln-facet FACET    Extra detail block(s) to request for vulnerabilities. Supported values: host_info, remediation, cve, evaluation_logic. Comma-separate multiple
-                        values, e.g. "host_info,remediation,cve". Note: --vuln-workers > 1 always returns host_info, app and remediation.entities from the API
-                        regardless of this setting. (default: none)
-  --worker-by-severity  Fetch vulnerabilities using severity-level bucketing. Runs five parallel query_vulnerabilities_combined streams (CRITICAL, HIGH, MEDIUM, LOW,
-                        and a catch-all), each with its own cursor chain. No two-phase ID scan — full records returned directly at up to 5,000 per page. Cannot be
-                        combined with --vuln-workers > 1 (severity mode takes precedence). (default: off)
-  --skip-host-map       Skip the discover host ID → aid mapping fetch. The output JSON will contain an empty "host_map" object. Use when you do not need to resolve
-                        discover host IDs to agent IDs and want to reduce the number of API calls. (default: off)
-  --decorate-aids       Annotate each application record with an "aid" field resolved from the host map (discover host ID → aid). Requires the host map to be present
-                        (incompatible with --skip-host-map). Applications whose host ID cannot be resolved (e.g. agentless assets) are left unmodified. (default: off)
-  --assessment-evidence
-                        Include evaluation logic (evidence) in each assessment finding. Adds the finding.evaluation_logic facet which returns the actual checks
-                        performed on the host — registry keys, values observed, and pass/fail result per condition. Increases response payload size. (default: off)
-  --assessment-large-env
-                        Use a 30-thread status × severity cross-product strategy for assessments (finding.status × finding.rule.severity). Recommended for very large
-                        environments where a single severity bucket in the default strategy would still be slow, e.g. millions of findings. Spawns up to 30 concurrent
-                        cursor chains instead of the default 6. (default: off)
+  --host-groups NAMES   Comma-separated host group NAMES to scope every dataset to, e.g. "Production Servers,Development". Applied additively (AND) on top of
+                        any --app/--vuln/--assessment-filter; multiple groups match with OR (a host in any listed group). Group names are resolved to IDs
+                        automatically for the Spotlight and Configuration Assessment queries (requires the host-groups:read scope); Discover uses the names
+                        directly. (default: none)
+  --tags TAGS           Comma-separated host grouping TAGS to scope every dataset to, e.g. "Monkey,heartbeat". Applied additively (AND) on top of any filter;
+                        multiple tags match with OR. A bare value is prefixed with "FalconGroupingTags/"; a value already containing a "prefix/" segment (e.g.
+                        "SensorGroupingTags/web") is used as-is. (default: none)
+
+Performance / Large Environments:
+  Parallelism strategies for environments with hundreds of thousands of hosts. Start with --large-env.
+
+  --large-env           Promoted convenience flag bundling the best-practice recipe for very large environments. Enables --app-large-env,
+                        --worker-by-severity and --assessment-large-env; switches --output-format to 'jsonl' for bounded memory (unless
+                        you set --output-format explicitly); and enables --decorate-aids (unless --skip-host-map is set). The recommended
+                        starting point for environments with hundreds of thousands of hosts. (default: off)
   --app-large-env       Fetch applications using MAC-address first-octet bucket parallelism. Phase 0 probes all 256 two-char hex prefixes in parallel (~1-3s) to
                         discover non-empty OUI buckets (~20-50 in typical environments). Phase 1 runs one query_combined_applications cursor chain per bucket
                         concurrently (up to 16 threads). Wall-clock time is bounded by the largest single bucket rather than the sum. Measured speedup on a 333k-record
                         environment: ~3.4x (7:54 -> ~2:21). Cursor-based pagination within each bucket ensures no record duplication or omission. (default: off)
+  --worker-by-severity  Fetch vulnerabilities using severity-level bucketing. Runs five parallel query_vulnerabilities_combined streams (CRITICAL, HIGH, MEDIUM, LOW,
+                        and a catch-all), each with its own cursor chain. No two-phase ID scan — full records returned directly at up to 5,000 per page. Cannot be
+                        combined with --vuln-workers > 1 (severity mode takes precedence). (default: off)
+  --vuln-workers N      Number of parallel workers for the vulnerability fetch. When N > 1 a two-phase strategy is used: first collects all vulnerability IDs (fast),
+                        then fetches full records in N concurrent threads. Recommended: 8. Raise cautiously — the API rate-limits at high concurrency. (default: 1)
+  --assessment-large-env
+                        Use a 30-thread status × severity cross-product strategy for assessments (finding.status × finding.rule.severity). Recommended for very large
+                        environments where a single severity bucket in the default strategy would still be slow, e.g. millions of findings. Spawns up to 30 concurrent
+                        cursor chains instead of the default 6. (default: off)
+
+Data Enrichment:
+  Decorate records with additional context as they are fetched.
+
+  --decorate-aids       Annotate each application record with an "aid" field resolved from the host map (discover host ID → aid). Requires the host map to be present
+                        (incompatible with --skip-host-map). Applications whose host ID cannot be resolved (e.g. agentless assets) are left unmodified. (default: off)
+  --iavm-file FILE      Path to a DISA IAVM CVE cross-reference XML file. When provided, vulnerability and assessment records are decorated with matching IAVM notice
+                        metadata (number, severity, title). (default: off)
+  --assessment-evidence
+                        Include evaluation logic (evidence) in each assessment finding. Adds the finding.evaluation_logic facet which returns the actual checks
+                        performed on the host — registry keys, values observed, and pass/fail result per condition. Increases response payload size. (default: off)
+  --vuln-facet FACET    Extra detail block(s) to request for vulnerabilities. Supported values: host_info, remediation, cve, evaluation_logic. Comma-separate multiple
+                        values, e.g. "host_info,remediation,cve". Note: --vuln-workers > 1 always returns host_info, app and remediation.entities from the API
+                        regardless of this setting. (default: none)
   --assessment-compliance-mapping, --no-assessment-compliance-mapping
                         Include compliance framework mappings (NIST, PCI DSS, SOC2, ISO, etc.) in each assessment finding rule. When disabled, the compliance_mappings
                         field is stripped from every finding.rule object, reducing output size. (default: on)
-  --verbose, -v         Enable verbose logging (DEBUG level). Shows full tracebacks on failures and HTTP traffic from the SDK.
-  --log-file FILE       Write a timestamped plain-text log to FILE at DEBUG level in addition to the terminal output.
-  --output-format {json,jsonl,xml}
-                        Output format. 'json' writes a single monolithic JSON file (the original behaviour, requires all data in memory). 'jsonl' writes one JSON-Lines
-                        file per dataset with bounded memory (ideal for large environments + jq exploration). 'xml' writes one XML file per dataset for downstream SOAP
-                        / enterprise ingestors. (default: json)
-  --output-dir DIR      Directory for multi-file output formats (jsonl, xml). Created automatically if it does not exist. Ignored when --output-format=json. (default:
-                        derived from --output filename)
-  --iavm-file FILE      Path to a DISA IAVM CVE cross-reference XML file. When provided, vulnerability and assessment records are decorated with matching IAVM notice
-                        metadata (number, severity, title). (default: off)
+
+Host Map:
+  Control the discover host ID → agent ID (aid) mapping fetch.
+
+  --skip-host-map       Skip the discover host ID → aid mapping fetch. The output JSON will contain an empty "host_map" object. Use when you do not need to resolve
+                        discover host IDs to agent IDs and want to reduce the number of API calls. (default: off)
+
+Output Layout & Compression:
+  How records are laid out on disk and whether output is compressed.
+
   --bucket-by-aid       Route output records to per-AID subdirectories. Each unique agent ID gets its own directory under <output-dir>/by_aid/ containing one file per
                         dataset. Enables per-host file discovery without post-processing. Implies --decorate-aids for applications. (default: off)
   --compress, --compressed
@@ -400,6 +460,11 @@ options:
                         output files (jsonl/xml). Originals are removed; manifest stays uncompressed for discoverability. (default: off)
   --compressed-by-aid   When used with --bucket-by-aid, zip each AID directory into a single archive (e.g. 190a664e08e2488ca2fc49b19a3a29ae.zip). The directory is
                         removed after archiving. Slower than --compress for selective access but produces fewer files. (default: off)
+  --indent N            JSON indentation spaces. Use 0 for compact output (default: 2).
+
+Logging:
+  --verbose, -v         Enable verbose logging (DEBUG level). Shows full tracebacks on failures and HTTP traffic from the SDK.
+  --log-file FILE       Write a timestamped plain-text log to FILE at DEBUG level in addition to the terminal output.
 
 Examples:
   femur --env-file crowdstrike.env
@@ -407,7 +472,11 @@ Examples:
   femur -e crowdstrike.env \
       --vuln-filter "cve.severity:'CRITICAL'+status:['open','reopen']" \
       --assessment-filter "finding.status:'fail'"
-```      
+  femur -e crowdstrike.env --host-groups "Production Servers,Development" --tags "Monkey"
+
+  # Large environment: one flag enables the full best-practice recipe
+  femur -e crowdstrike.env --large-env --output-dir ./inventory
+```
 
 ## Development
 

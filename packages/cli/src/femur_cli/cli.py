@@ -37,9 +37,11 @@ from rich.traceback import Traceback
 
 from femur import (
     assemble_inventory_payload,
+    augment_filter,
     collect_fetch_errors,
     decorate_applications_with_aid,
     load_credentials,
+    resolve_group_names_to_ids,
     strip_compliance_mappings,
 )
 from femur_pipeline.pipeline import ChainedTransform
@@ -116,9 +118,41 @@ def _setup_logging(verbose: bool, log_file: Optional[str]) -> None:
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def _expand_large_env(args: argparse.Namespace) -> None:
+    """Expand the promoted ``--large-env`` flag into the concrete recipe.
+
+    ``--large-env`` is a convenience wrapper around the best-practice large
+    environment settings documented in the README.  It enables the three
+    parallelism strategies, streams to JSONL for bounded memory, and turns on
+    AID decoration — while respecting any explicit user overrides:
+
+    * ``--output-format`` is only forced to ``jsonl`` when the user did not
+      pass one (parser default is ``None``).
+    * ``--decorate-aids`` is only enabled when the host map is available
+      (i.e. ``--skip-host-map`` was not passed).
+
+    Finally, the ``None`` sentinel for ``--output-format`` is resolved to the
+    module default so the rest of the CLI can treat it as a concrete value.
+    """
+    if args.large_env:
+        args.app_large_env = True
+        args.worker_by_severity = True
+        args.assessment_large_env = True
+        if args.output_format is None:
+            args.output_format = "jsonl"
+        if not args.skip_host_map:
+            args.decorate_aids = True
+
+    # Resolve the "was it set?" sentinel to a concrete format for all paths.
+    if args.output_format is None:
+        args.output_format = DEFAULT_OUTPUT_FORMAT
+
+
 def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    _expand_large_env(args)
 
     _setup_logging(verbose=args.verbose, log_file=args.log_file)
     log.info("Inventory run started")
@@ -150,6 +184,48 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
     app_filter: Optional[str] = args.app_filter or None
     vuln_filter: Optional[str] = args.vuln_filter or None
     assessment_filter: Optional[str] = args.assessment_filter or None
+
+    # ------------------------------------------------------------------
+    # First-class scope filters: --host-groups / --tags
+    # ------------------------------------------------------------------
+    # Parse comma-separated lists (empty → None).
+    group_names: Optional[List[str]] = (
+        [g.strip() for g in args.host_groups.split(",") if g.strip()]
+        if args.host_groups
+        else None
+    )
+    tags: Optional[List[str]] = (
+        [t.strip() for t in args.tags.split(",") if t.strip()]
+        if args.tags
+        else None
+    )
+
+    # Discover filters groups by NAME; Spotlight + Assessment filter by ID.
+    # Resolve names → IDs once (single query) when group scoping is requested.
+    group_ids: Optional[List[str]] = None
+    if group_names:
+        try:
+            resolved, missing = resolve_group_names_to_ids(creds, group_names)
+        except Exception as exc:  # pragma: no cover - network failure path
+            console.print(
+                f"[bold red]ERROR:[/bold red] Failed to resolve host group names: {exc}"
+            )
+            sys.exit(1)
+        if missing:
+            console.print(
+                "[bold red]ERROR:[/bold red] Host group name(s) not found: "
+                f"{', '.join(repr(m) for m in missing)}. "
+                "Check the exact group name in the Falcon console."
+            )
+            sys.exit(1)
+        # Preserve the user's ordering when building the ID list.
+        group_ids = [resolved[name] for name in group_names]
+
+    if group_names or tags:
+        app_filter = augment_filter(app_filter, "applications", group_values=group_names, tags=tags)
+        vuln_filter = augment_filter(vuln_filter, "vulnerabilities", group_values=group_ids, tags=tags)
+        assessment_filter = augment_filter(assessment_filter, "assessments", group_values=group_ids, tags=tags)
+
     # Parse comma-separated facet string into a list, or None if not provided.
     vuln_facet: Optional[List[str]] = (
         [f.strip() for f in args.vuln_facet.split(",") if f.strip()]
@@ -201,6 +277,12 @@ def _print_config_summary(
     cfg.add_column()
     cfg.add_row("Base URL", f"[bold]{creds['base_url']}[/bold]")
     cfg.add_row("Output", f"[bold]{args.output}[/bold]")
+    if args.large_env:
+        cfg.add_row("Mode", "[cyan]large-env (promoted recipe)[/cyan]")
+    if args.host_groups:
+        cfg.add_row("Host groups scope", f"[cyan]{args.host_groups}[/cyan]")
+    if args.tags:
+        cfg.add_row("Tags scope", f"[cyan]{args.tags}[/cyan]")
     output_format = getattr(args, "output_format", DEFAULT_OUTPUT_FORMAT)
     if output_format != "json":
         output_dir = args.output_dir or os.path.splitext(args.output)[0]
@@ -356,6 +438,14 @@ def _main_streaming(
                 })
                 if fetch_errors:
                     sink.set_metadata("errors", fetch_errors)
+                    # A streaming dataset that errored may have already flushed
+                    # some records to disk before aborting — its count in the
+                    # manifest is therefore a partial fragment, not a complete
+                    # total. Flag those datasets explicitly so downstream
+                    # consumers do not trust the count as final.
+                    sink.set_metadata(
+                        "partial", sorted(e["dataset"] for e in fetch_errors)
+                    )
         except KeyboardInterrupt:
             console.print("\n[yellow]Interrupted.[/yellow]")
             sys.exit(130)
@@ -385,6 +475,14 @@ def _main_streaming(
             summary.add_row(label, f"{result:,}", "[green]✓[/green]")
     console.print(summary)
     console.print()
+    if fetch_errors:
+        console.print(
+            "[yellow]⚠[/yellow]  One or more datasets failed mid-stream. Any "
+            "records already written for a failed dataset are [bold]partial[/bold] "
+            "— see the [bold]partial[/bold] and [bold]errors[/bold] keys in "
+            "manifest.json. Re-run to obtain a complete dataset."
+        )
+        console.print()
     console.print(f"[green]✓[/green] Written to [bold]{output_dir!r}[/bold] ({output_format})")
     console.print()
 

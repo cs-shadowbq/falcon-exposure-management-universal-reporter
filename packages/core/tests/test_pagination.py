@@ -71,6 +71,27 @@ class TestCheckResponse:
             _check_response(resp, "op")
         assert exc_info.value.errors == errors
 
+    def test_204_no_content_is_treated_as_empty_page_not_error(self):
+        """A persistent 204 (falconpy 'No content') must not raise — it's an empty page."""
+        resp = {
+            "status_code": 204,
+            "body": {
+                "resources": [],
+                "meta": {"pagination": {}},
+                "errors": [{"message": "No content was received for this request."}],
+            },
+        }
+        # Must NOT raise, despite the error entry.
+        assert _check_response(resp, "query_combined_assessments") == []
+
+    def test_204_with_resources_returns_them(self):
+        """Defensive: a 204 that somehow carries resources still yields them."""
+        resp = {
+            "status_code": 204,
+            "body": {"resources": [{"id": "x"}], "meta": {}, "errors": []},
+        }
+        assert _check_response(resp, "op") == [{"id": "x"}]
+
 
 # ---------------------------------------------------------------------------
 # _paginate_after
@@ -331,3 +352,48 @@ class TestRetryingCall:
         assert results == [{"id": "a"}, {"id": "b"}]
         assert sdk_fn.call_count == 3
         mock_sleep.assert_called_once()
+
+
+def make_204():
+    """falconpy NoContentWarning shape: 204 + error message + empty resources."""
+    return {
+        "status_code": 204,
+        "body": {
+            "resources": [],
+            "meta": {"pagination": {}},
+            "errors": [{"message": "No content was received for this request."}],
+        },
+        "headers": {},
+    }
+
+
+class TestNoContentHandling:
+    """204 'No content' is transient under load — retried, then treated as empty."""
+
+    @patch("femur._pagination.time.sleep")
+    def test_retries_on_204_and_succeeds(self, mock_sleep):
+        sdk_fn = MagicMock(side_effect=[make_204(), make_response([{"id": "a"}])])
+        result = _retrying_call(sdk_fn, {"limit": 100}, "op")
+        assert result["status_code"] == 200
+        assert sdk_fn.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("femur._pagination.time.sleep")
+    def test_persistent_204_does_not_abort_pagination(self, mock_sleep):
+        """A 204 that survives all retries ends the chain cleanly with no exception."""
+        sdk_fn = MagicMock(return_value=make_204())
+        # Would previously raise FalconAPIError and discard the whole dataset.
+        results = list(_paginate_after(sdk_fn, 100, "op"))
+        assert results == []
+
+    @patch("femur._pagination.time.sleep")
+    def test_transient_204_midstream_recovers(self, mock_sleep):
+        """One 204 blip between good pages must not lose the earlier or later data."""
+        sdk_fn = MagicMock(side_effect=[
+            make_response([{"id": "a"}], after="tok1"),
+            make_204(),
+            make_response([{"id": "b"}]),
+        ])
+        results = list(_paginate_after(sdk_fn, 1, "op"))
+        assert results == [{"id": "a"}, {"id": "b"}]
+        assert sdk_fn.call_count == 3

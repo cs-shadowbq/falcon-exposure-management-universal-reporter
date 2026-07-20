@@ -70,7 +70,7 @@ lint: ## Run pylint and mypy
 	mypy packages/core/src packages/pipeline/src packages/cli/src packages/server/src
 
 ##@ Build
-dist: ## Build all package wheels
+dist: ## Build all package wheels into dist/
 	python3 -m pip install --quiet build
 	python3 -m build --wheel --outdir dist/ packages/core
 	python3 -m build --wheel --outdir dist/ packages/pipeline
@@ -80,7 +80,7 @@ dist: ## Build all package wheels
 	@echo "Wheels built:"
 	@ls -1 dist/*.whl
 
-airgap: ## Build airgap bundles for RHEL 9 x86_64
+airgap: dist ## Build airgap bundles (wheels + deps + SBOM) for RHEL 9 x86_64
 	./scripts/build-airgap.sh --python $(AIRGAP_PYTHON)
 
 dist-clean: ## Remove dist artifacts
@@ -101,7 +101,7 @@ bump\:minor: ## Bump minor version (e.g. 2.0.1 -> 2.1.0) across all packages
 bump\:major: ## Bump major version (e.g. 2.1.0 -> 3.0.0) across all packages
 	@python3 -c "$$BUMP_SCRIPT" major $(PYPROJECT_FILES)
 
-release: dist airgap ## Create GitHub release (gh CLI or manual instructions)
+release: airgap ## Runs airgap (builds wheels + bundles), then creates a GitHub release (gh CLI or manual instructions)
 	@VERSION=$$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])" 2>/dev/null || python3 -c "import tomli as tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"); \
 	TAG="v$$VERSION"; \
 	echo ""; \

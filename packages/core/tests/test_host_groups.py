@@ -8,6 +8,7 @@ from femur.host_groups import (
     get_host_group_ids,
     iter_group_members,
     iter_host_groups,
+    resolve_group_names_to_ids,
 )
 
 CREDS = {"client_id": "test", "client_secret": "test", "base_url": "US1"}
@@ -230,3 +231,65 @@ class TestGetHostGroupIds:
         }
         with pytest.raises(FalconAPIError):
             get_host_group_ids(CREDS)
+
+
+# ---------------------------------------------------------------------------
+# resolve_group_names_to_ids
+# ---------------------------------------------------------------------------
+
+class TestResolveGroupNamesToIds:
+    @patch("femur.host_groups.HostGroup")
+    def test_resolves_names_to_ids(self, MockHG):
+        instance = MockHG.return_value
+        instance.query_combined_host_groups.return_value = make_response(
+            [
+                {"name": "Cloud Lab", "id": "dfba0b1b823e46409f069711d151be0c"},
+                {"name": "Development", "id": "aaa111"},
+            ]
+        )
+        resolved, missing = resolve_group_names_to_ids(
+            CREDS, ["Cloud Lab", "Development"]
+        )
+        assert resolved == {
+            "Cloud Lab": "dfba0b1b823e46409f069711d151be0c",
+            "Development": "aaa111",
+        }
+        assert missing == []
+
+    @patch("femur.host_groups.HostGroup")
+    def test_single_query_with_name_array(self, MockHG):
+        instance = MockHG.return_value
+        instance.query_combined_host_groups.return_value = make_response([])
+        resolve_group_names_to_ids(CREDS, ["Cloud Lab", "Development"])
+        # Exactly one API request regardless of the number of names.
+        assert instance.query_combined_host_groups.call_count == 1
+        call_kwargs = instance.query_combined_host_groups.call_args[1]
+        assert call_kwargs["filter"] == "name:*'Cloud Lab',name:*'Development'"
+
+    @patch("femur.host_groups.HostGroup")
+    def test_reports_missing_names(self, MockHG):
+        instance = MockHG.return_value
+        instance.query_combined_host_groups.return_value = make_response(
+            [{"name": "Cloud Lab", "id": "abc"}]
+        )
+        resolved, missing = resolve_group_names_to_ids(
+            CREDS, ["Cloud Lab", "Nonexistent"]
+        )
+        assert resolved == {"Cloud Lab": "abc"}
+        assert missing == ["Nonexistent"]
+
+    @patch("femur.host_groups.HostGroup")
+    def test_empty_input_makes_no_call(self, MockHG):
+        instance = MockHG.return_value
+        resolved, missing = resolve_group_names_to_ids(CREDS, [])
+        assert resolved == {}
+        assert missing == []
+        instance.query_combined_host_groups.assert_not_called()
+
+    @patch("femur.host_groups.HostGroup")
+    def test_escapes_single_quotes_in_names(self, MockHG):
+        instance = MockHG.return_value
+        instance.query_combined_host_groups.return_value = make_response([])
+        resolve_group_names_to_ids(CREDS, ["O'Brien Lab"])
+        call_kwargs = instance.query_combined_host_groups.call_args[1]
+        assert call_kwargs["filter"] == "name:*'O\\'Brien Lab'"

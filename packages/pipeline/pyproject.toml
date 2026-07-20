@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "femur-pipeline"
-version = "2.0.1"
+version = "2.1.0"
 description = "Streaming data pipeline, transforms, and output sinks for Falcon inventory data"
 readme = {text = "Streaming data pipeline, transforms, and output sinks for Falcon inventory data", content-type = "text/plain"}
 license = { text = "MIT" }

@@ -7,9 +7,16 @@ from ._exceptions import FalconAPIError
 
 _log = logging.getLogger("femur.retry")
 
-_RETRY_STATUS_CODES = frozenset({401, 429, 500, 502, 503, 504})
+# 204 (No Content) is falconpy's transient "empty/undecodable body" path: under
+# heavy concurrency (e.g. --large-env's 30 assessment buckets) the API
+# occasionally returns an empty body which falconpy surfaces as a
+# NoContentWarning with status_code=204 and an error message. A genuinely
+# empty result set comes back as 200 with resources=[], so a 204 is treated as
+# transient and retried rather than aborting the whole dataset.
+_RETRY_STATUS_CODES = frozenset({204, 401, 429, 500, 502, 503, 504})
 _RATE_LIMIT_CODE = 429
 _AUTH_CODE = 401
+_NO_CONTENT_CODE = 204
 _MAX_RETRIES = 6
 _MAX_AUTH_RETRIES = 3   # 401s: limited retries for token refresh
 _BASE_DELAY = 1.0   # seconds
@@ -75,6 +82,15 @@ def _retrying_call(
                 max_retries,
                 wait,
             )
+        elif status_code == _NO_CONTENT_CODE:
+            _log.warning(
+                "Empty body (204 No Content) on %s (attempt %d/%d) — "
+                "transient, retrying in %.1fs",
+                operation,
+                attempt + 1,
+                max_retries,
+                wait,
+            )
         else:
             _log.warning(
                 "Transient %d on %s (attempt %d/%d) — retrying in %.1fs",
@@ -92,14 +108,32 @@ def _check_response(response: dict, operation: str) -> List[Any]:
     """Validate a falconpy response and return the resources list.
 
     Raises:
-        FalconAPIError: If ``status_code >= 400`` or the body contains errors.
+        FalconAPIError: If ``status_code >= 400`` or the body contains errors,
+            except for the transient 204 "No Content" case (see below).
 
     Returns:
         The ``body.resources`` list, or an empty list when absent.
+
+    A ``204`` response is falconpy's "empty/undecodable body" signal. It is
+    retried upstream by :func:`_retrying_call`; if it still arrives here (the
+    blip persisted through every retry), it is treated as an **empty page**
+    rather than a fatal error so a single transient hiccup in one pagination
+    chain does not discard the entire dataset. Genuine errors always carry a
+    ``status_code >= 400`` or an error entry with a non-empty ``code``.
     """
     status_code = response.get("status_code", 0)
     body = response.get("body") or {}
     errors = body.get("errors") or []
+
+    # Transient empty-body 204: not a real error — treat as an empty page.
+    if status_code == _NO_CONTENT_CODE:
+        _log.warning(
+            "Persistent 204 No Content on %s after retries — "
+            "treating as empty page (no records for this request)",
+            operation,
+        )
+        return body.get("resources") or []
+
     if status_code >= 400 or errors:
         raise FalconAPIError(
             operation=operation,
