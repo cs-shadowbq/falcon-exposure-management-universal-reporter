@@ -2,6 +2,10 @@
 # Build airgap deployment bundle for FEMUR (monorepo)
 # Run on a machine WITH internet to produce a transferable bundle.
 #
+# Each bundle is a self-contained offline install kit: all project + dependency
+# wheels, a hash-pinned lockfile, a CycloneDX SBOM, the man pages, and the full
+# install/upgrade/uninstall lifecycle scripts from dist-templates/.
+#
 # Usage:
 #   ./scripts/build-airgap.sh                  # defaults: Python 3.9, RHEL 9 x86_64
 #   ./scripts/build-airgap.sh --python 312     # Python 3.12 target
@@ -11,11 +15,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+TEMPLATES_DIR="$PROJECT_DIR/dist-templates"
+BUILD_DIR="$PROJECT_DIR/build"
 
 # Defaults
 PYTHON_VERSIONS="39"
 PLATFORM="manylinux_2_28_x86_64"
-DIST_DIR="$PROJECT_DIR/dist"
+DIST_BASE="$PROJECT_DIR/dist"
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -57,6 +63,10 @@ except ModuleNotFoundError:
 print(tomllib.load(open('$PROJECT_DIR/pyproject.toml', 'rb'))['project']['version'])
 ")
 
+# Version-scoped output directory so different versions never mingle and the
+# generated SHA256SUMS only ever covers a single release.
+DIST_DIR="$DIST_BASE/$VERSION"
+
 echo "=== Building FEMUR v${VERSION} airgap bundles ==="
 echo "Target platform: ${PLATFORM}"
 echo "Python versions: ${PYTHON_VERSIONS}"
@@ -83,8 +93,16 @@ echo "Wheels in dist/:"
 find "$DIST_DIR" -maxdepth 1 -name '*.whl' -exec basename {} \; | sort
 echo ""
 
-# Collect all runtime deps from all packages
-ALL_DEPS="crowdstrike-falconpy rich python-dotenv defusedxml fastapi uvicorn"
+# Runtime deps are resolved from the actual project wheels (below), so version
+# floors always come from the packages' pyproject.toml. femur-server pulls
+# uvicorn[standard], so its extra (httptools, uvloop, websockets, watchgod,
+# pyyaml, ...) is resolved automatically. The [standard] extra is requested
+# explicitly alongside the project wheels so pip includes it.
+PROJECT_REQS="femur-cli femur-server uvicorn[standard]"
+
+# Templates and generated artifacts copied verbatim into every bundle.
+LIFECYCLE_FILES=(install.sh uninstall.sh upgrade.sh merge_env.py femur-server.service)
+MAN_PAGES=(femur.1 femurd.1)
 
 # Build bundles for each Python version
 IFS=',' read -ra VERSIONS <<< "$PYTHON_VERSIONS"
@@ -101,228 +119,235 @@ for PYVER in "${VERSIONS[@]}"; do
     # Copy all project wheels
     find "$DIST_DIR" -maxdepth 1 -name '*.whl' -exec cp {} "$BUNDLE_DIR/wheels/" \;
 
-    # Download platform-specific dependencies
-    echo "Downloading dependencies for cp${PYVER} / ${PLATFORM}..."
+    # Download every runtime dependency in a SINGLE resolver pass. Splitting the
+    # platform-specific and pure-python downloads across two `pip download` runs
+    # breaks resolution (each run sees only a partial graph and backtracks to
+    # wrong/old versions, or drops env-marker deps like exceptiongroup). Passing
+    # multiple --platform/--abi tags to one invocation lets pip pick manylinux
+    # AND pure-python (none/any) wheels together against the full graph.
+    #
+    # --platform matches wheel tags EXACTLY (pip does not infer that a 2_28 host
+    # runs older manylinux wheels), so the full compatible manylinux lineage must
+    # be listed: some deps (e.g. watchfiles, a Rust abi3 package) only publish
+    # manylinux_2_17/2014 wheels. Newest baseline first so pip prefers it.
+    #
+    # Resolving against the project wheels (--find-links to the bundle's own
+    # wheels/) means transitive deps + version floors come from the packages'
+    # pyproject.toml rather than a hand-maintained list.
+    echo "Downloading dependencies for cp${PYVER} / ${PLATFORM} lineage..."
+    # Fail loudly if resolution fails: a swallowed error would ship a bundle
+    # missing its dependencies (the offline install would then fail on the
+    # airgapped host, far from where the problem can be diagnosed). PIPESTATUS[0]
+    # is pip's exit code (not grep's, which is always 0 with `|| true`).
+    # shellcheck disable=SC2086  # PROJECT_REQS must word-split into separate args
     pip download \
         --platform "$PLATFORM" \
-        --python-version "$PYVER" \
-        --implementation cp \
-        --abi "cp${PYVER}" \
-        --only-binary=:all: \
-        --dest "$BUNDLE_DIR/wheels/" \
-        $ALL_DEPS \
-        2>&1 | grep -E "^(Downloading|Saved|File was already)" || true
-
-    # Also grab pure-python fallbacks
-    pip download \
+        --platform manylinux_2_17_x86_64 \
+        --platform manylinux2014_x86_64 \
+        --platform manylinux_2_5_x86_64 \
+        --platform manylinux1_x86_64 \
         --platform any \
         --python-version "$PYVER" \
         --implementation cp \
+        --abi "cp${PYVER}" \
+        --abi abi3 \
         --abi none \
         --only-binary=:all: \
+        --find-links "$BUNDLE_DIR/wheels/" \
         --dest "$BUNDLE_DIR/wheels/" \
-        $ALL_DEPS \
-        2>/dev/null || true
-
-    # Generate CycloneDX SBOM from bundled wheels
-    echo "Generating SBOM (CycloneDX)..."
-    python3 -c "
-import json, zipfile, email.parser, os, datetime
-
-wheels_dir = '$BUNDLE_DIR/wheels'
-components = []
-for fname in sorted(os.listdir(wheels_dir)):
-    if not fname.endswith('.whl'):
-        continue
-    whl_path = os.path.join(wheels_dir, fname)
-    with zipfile.ZipFile(whl_path) as zf:
-        metadata_files = [n for n in zf.namelist() if n.endswith('/METADATA')]
-        if not metadata_files:
-            continue
-        with zf.open(metadata_files[0]) as mf:
-            meta = email.parser.BytesParser().parsebytes(mf.read())
-    name = str(meta.get('Name', ''))
-    version = str(meta.get('Version', ''))
-    purl = f'pkg:pypi/{name.lower().replace(\"-\", \"-\")}@{version}'
-    component = {
-        'type': 'library',
-        'name': name,
-        'version': version,
-        'purl': purl,
-        'bom-ref': purl,
-    }
-    license_val = str(meta.get('License-Expression') or '')
-    if not license_val or len(license_val) > 80:
-        classifiers = meta.get_all('Classifier') or []
-        for c in classifiers:
-            if str(c).startswith('License :: OSI Approved ::'):
-                license_val = str(c).split('::')[-1].strip()
-                break
-    if not license_val:
-        license_val = str(meta.get('License', ''))
-    if license_val and license_val.strip() and license_val.strip() != 'UNKNOWN':
-        short = license_val.strip().split('\\n')[0].strip()
-        if len(short) <= 80:
-            component['licenses'] = [{'expression': short}]
-        else:
-            component['licenses'] = [{'license': {'name': short[:200]}}]
-    author = str(meta.get('Author') or meta.get('Author-email') or '')
-    if author:
-        component['author'] = author
-    component['evidence'] = {'identity': {'field': 'filename', 'methods': [{'technique': 'filename', 'value': fname}]}}
-    components.append(component)
-
-sbom = {
-    '\$schema': 'http://cyclonedx.org/schema/bom-1.5.schema.json',
-    'bomFormat': 'CycloneDX',
-    'specVersion': '1.5',
-    'version': 1,
-    'metadata': {
-        'timestamp': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'component': {
-            'type': 'application',
-            'name': 'femur',
-            'version': '$VERSION',
-            'purl': 'pkg:pypi/femur-cli@$VERSION',
-            'bom-ref': 'pkg:pypi/femur-cli@$VERSION',
-        },
-        'tools': [{'name': 'build-airgap.sh', 'version': '$VERSION'}],
-    },
-    'components': components,
-}
-
-with open('$BUNDLE_DIR/sbom.cdx.json', 'w') as f:
-    json.dump(sbom, f, indent=2)
-print(f'  {len(components)} components in sbom.cdx.json')
-"
-
-    # Create install script
-    cat > "$BUNDLE_DIR/install.sh" << 'INSTALL_EOF'
-#!/bin/bash
-# FEMUR airgap installer
-set -e
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WHEEL_DIR="$SCRIPT_DIR/wheels"
-
-echo "=== FEMUR Airgap Installer ==="
-echo ""
-echo "Available packages:"
-echo "  femur-cli    — CLI tool (command: femur)"
-echo "  femur-server — REST API server (command: femurd)"
-echo ""
-
-# Detect Python
-PYTHON=""
-for candidate in python3.12 python3.11 python3.9 python3; do
-    if command -v "$candidate" &>/dev/null; then
-        PYTHON="$candidate"
-        break
+        $PROJECT_REQS \
+        2>&1 | grep -E "^(Downloading|Saved|File was already)" || true
+    DL_RC="${PIPESTATUS[0]}"
+    if [ "$DL_RC" -ne 0 ]; then
+        echo "ERROR: dependency download failed for cp${PYVER} (pip exit $DL_RC)." >&2
+        echo "       Re-run the pip download above without the grep filter to see the" >&2
+        echo "       full resolver error. Aborting so no incomplete bundle is shipped." >&2
+        exit 1
     fi
-done
 
-if [ -z "$PYTHON" ]; then
-    echo "ERROR: No python3 found in PATH"
-    exit 1
-fi
+    # Supplemental marker-conditional deps. pip evaluates environment markers
+    # (python_version < "3.11", ...) against the BUILD host's interpreter, NOT
+    # --python-version, so deps gated behind an older-Python marker are silently
+    # skipped when building on a newer Python. Fetch them explicitly for the
+    # target version. (The reference tool works around the same pip limitation
+    # by hand-adding tomli for py<311.) For cp39/cp310, anyio needs
+    # exceptiongroup; without it the offline install fails on the target.
+    SUPPLEMENTAL=""
+    if [ "$PYVER" -lt 311 ]; then
+        SUPPLEMENTAL="exceptiongroup"
+    fi
+    if [ -n "$SUPPLEMENTAL" ]; then
+        echo "Fetching marker-conditional deps for cp${PYVER}: $SUPPLEMENTAL"
+        # shellcheck disable=SC2086
+        pip download \
+            --platform "$PLATFORM" \
+            --platform manylinux_2_17_x86_64 \
+            --platform manylinux2014_x86_64 \
+            --platform manylinux_2_5_x86_64 \
+            --platform manylinux1_x86_64 \
+            --platform any \
+            --python-version "$PYVER" \
+            --implementation cp \
+            --abi "cp${PYVER}" \
+            --abi abi3 \
+            --abi none \
+            --only-binary=:all: \
+            --no-deps \
+            --dest "$BUNDLE_DIR/wheels/" \
+            $SUPPLEMENTAL \
+            2>&1 | grep -E "^(Downloading|Saved|File was already)" || true
+        if [ "${PIPESTATUS[0]}" -ne 0 ]; then
+            echo "ERROR: supplemental dep download failed for cp${PYVER}. Aborting." >&2
+            exit 1
+        fi
+    fi
 
-PYVER=$($PYTHON -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-echo "Using: $PYTHON (Python $PYVER)"
-echo ""
+    # Generate hash-pinned lockfile so the offline install can use --require-hashes.
+    echo "Generating hash-pinned lockfile..."
+    python3 "$SCRIPT_DIR/gen_lockfile.py" "$BUNDLE_DIR/wheels" "$BUNDLE_DIR/requirements.lock"
 
-# Check if pip is available
-if $PYTHON -m pip --version &>/dev/null; then
-    echo "Installing with pip (--no-index)..."
-    $PYTHON -m pip install --no-index --find-links="$WHEEL_DIR" femur-cli femur-server
-    echo ""
-    echo "Done!"
-    echo "  CLI:    femur --help"
-    echo "  Server: femurd --help"
-elif $PYTHON -m ensurepip --help &>/dev/null; then
-    echo "Bootstrapping pip via ensurepip..."
-    $PYTHON -m ensurepip --user 2>/dev/null || $PYTHON -m ensurepip
-    $PYTHON -m pip install --no-index --find-links="$WHEEL_DIR" femur-cli femur-server
-    echo ""
-    echo "Done!"
-    echo "  CLI:    femur --help"
-    echo "  Server: femurd --help"
-else
-    echo "pip not available. Installing via manual extraction..."
-    echo ""
+    # Generate CycloneDX SBOM from the bundled wheels (full install closure).
+    echo "Generating SBOM (CycloneDX)..."
+    python3 "$SCRIPT_DIR/gen_sbom.py" "$BUNDLE_DIR/wheels" "$BUNDLE_DIR/sbom.cdx.json" "$VERSION"
 
-    INSTALL_DIR="$HOME/.local/lib/python${PYVER}/site-packages"
-    mkdir -p "$INSTALL_DIR"
+    # --- CLI-only (reporter) closure -------------------------------------------
+    # A --no-server install ships femur (CLI) but not femurd (server). Resolve the
+    # femur-cli closure OFFLINE against the bundle's own wheels to get the exact
+    # subset (pulls pipeline + core, excludes fastapi/uvicorn/starlette/...), then
+    # emit a matching lockfile and SBOM so the reporter-only path stays
+    # hash-verified and its SBOM reflects only what is deployed.
+    echo "Resolving CLI-only closure for reporter installs..."
+    CLI_CLOSURE_DIR="$(mktemp -d)"
+    if pip download \
+        --no-index \
+        --find-links "$BUNDLE_DIR/wheels/" \
+        --platform "$PLATFORM" \
+        --platform manylinux_2_17_x86_64 \
+        --platform manylinux2014_x86_64 \
+        --platform manylinux_2_5_x86_64 \
+        --platform manylinux1_x86_64 \
+        --platform any \
+        --python-version "$PYVER" \
+        --implementation cp \
+        --abi "cp${PYVER}" \
+        --abi abi3 \
+        --abi none \
+        --only-binary=:all: \
+        --dest "$CLI_CLOSURE_DIR" \
+        femur-cli \
+        >/dev/null 2>&1; then
+        # Comma-separated list of the wheel filenames in the CLI closure.
+        CLI_ONLY="$(find "$CLI_CLOSURE_DIR" -maxdepth 1 -name '*.whl' -exec basename {} \; | sort | paste -sd, -)"
+        rm -rf "$CLI_CLOSURE_DIR"
+        if [ -n "$CLI_ONLY" ]; then
+            echo "Generating CLI-only lockfile + SBOM..."
+            python3 "$SCRIPT_DIR/gen_lockfile.py" "$BUNDLE_DIR/wheels" \
+                "$BUNDLE_DIR/requirements-cli.lock" --only "$CLI_ONLY"
+            python3 "$SCRIPT_DIR/gen_sbom.py" "$BUNDLE_DIR/wheels" \
+                "$BUNDLE_DIR/sbom-cli.cdx.json" "$VERSION" --only "$CLI_ONLY"
+        else
+            echo "WARNING: CLI closure resolved to nothing; --no-server install will" >&2
+            echo "         fall back to a non-hash-verified install on the target." >&2
+        fi
+    else
+        rm -rf "$CLI_CLOSURE_DIR"
+        echo "WARNING: could not resolve CLI-only closure offline; skipping" >&2
+        echo "         requirements-cli.lock / sbom-cli.cdx.json. --no-server will" >&2
+        echo "         still work but without hash verification." >&2
+    fi
 
-    echo "Extracting wheels to: $INSTALL_DIR"
-    for whl in "$WHEEL_DIR"/*.whl; do
-        echo "  $(basename "$whl")"
-        unzip -q -o "$whl" -d "$INSTALL_DIR"
+    # Copy the install lifecycle scripts + systemd unit from dist-templates/.
+    for f in "${LIFECYCLE_FILES[@]}"; do
+        if [ -f "$TEMPLATES_DIR/$f" ]; then
+            cp "$TEMPLATES_DIR/$f" "$BUNDLE_DIR/$f"
+        else
+            echo "WARNING: dist-templates/$f not found; bundle will be missing it." >&2
+        fi
+    done
+    chmod +x "$BUNDLE_DIR/install.sh" "$BUNDLE_DIR/uninstall.sh" "$BUNDLE_DIR/upgrade.sh" 2>/dev/null || true
+
+    # Copy the generated man pages (built by `make man` into build/).
+    for page in "${MAN_PAGES[@]}"; do
+        if [ -f "$BUILD_DIR/$page" ]; then
+            cp "$BUILD_DIR/$page" "$BUNDLE_DIR/$page"
+        else
+            echo "WARNING: build/$page not found; run 'make man' first. Bundle will lack it." >&2
+        fi
     done
 
-    BIN_DIR="$HOME/.local/bin"
-    mkdir -p "$BIN_DIR"
-    cat > "$BIN_DIR/femur" << EOF
-#!/bin/bash
-export PYTHONPATH="$INSTALL_DIR:\$PYTHONPATH"
-exec $PYTHON -m femur_cli "\$@"
-EOF
-    cat > "$BIN_DIR/femurd" << EOF
-#!/bin/bash
-export PYTHONPATH="$INSTALL_DIR:\$PYTHONPATH"
-exec $PYTHON -m femur_server.server "\$@"
-EOF
-    chmod +x "$BIN_DIR/femur" "$BIN_DIR/femurd"
+    # Seed config template for install.sh (WORKSPACE/service seeding).
+    if [ -f "$PROJECT_DIR/example.env" ]; then
+        cp "$PROJECT_DIR/example.env" "$BUNDLE_DIR/example.env"
+    fi
 
-    echo ""
-    echo "Done!"
-    echo "Ensure ~/.local/bin is in PATH:  export PATH=\$HOME/.local/bin:\$PATH"
-    echo "  CLI:    femur --help"
-    echo "  Server: femurd --help"
-fi
-INSTALL_EOF
-    chmod +x "$BUNDLE_DIR/install.sh"
+    # Ship the human-facing install guide alongside the scripts.
+    [ -f "$PROJECT_DIR/INSTALL.md" ] && cp "$PROJECT_DIR/INSTALL.md" "$BUNDLE_DIR/INSTALL.md"
 
-    # Create README
+    # Create the per-bundle README.
     cat > "$BUNDLE_DIR/README.md" << EOF
 # FEMUR v${VERSION} — Airgap Bundle
 
 **Target:** RHEL 9 x86_64, Python ${PYVER_DOT}
 
-## Quick Install
+## Install
 
 \`\`\`bash
 chmod +x install.sh
-./install.sh
+./install.sh                                   # install both binaries (femur, femurd)
+./install.sh --no-server                       # reporter only: femur CLI, no femurd
+./install.sh --workspace-path /opt/femur       # + prepare a run directory
+sudo ./install.sh --service -y                 # + hardened femurd systemd service
 \`\`\`
 
-## Selective Install (CLI only, no server)
+Installs the \`femur\` CLI and \`femurd\` server offline from \`wheels/\` (hash-verified
+against \`requirements.lock\`), the man pages, and records install state to a manifest
+under \`~/.config/femur\` (or \`/var/log/femur\` for a service install).
+
+**Reporter-only (\`--no-server\`):** installs just the \`femur\` CLI (which still
+pulls in the pipeline + core it needs), hash-verified against
+\`requirements-cli.lock\`. Skips the \`femurd\` binary, its man page, and the
+systemd service. The matching \`sbom-cli.cdx.json\` (not the full SBOM) is
+recorded so a reporter host's SBOM reflects only what is deployed.
+
+## Upgrade / Uninstall (from a matching or newer bundle)
 
 \`\`\`bash
-pip install --no-index --find-links=./wheels/ femur-cli
+./upgrade.sh --check-install     # inspect current install, no changes
+./upgrade.sh                     # upgrade packages, refresh man pages, merge .env
+./uninstall.sh                   # remove packages/wrappers/man/service (keeps config+data)
+./uninstall.sh --purge           # also delete .env, data, logs
 \`\`\`
 
-## Manual Install (no pip, no root)
+Upgrade and uninstall are manifest-driven: a reporter-only install is upgraded
+and removed as a CLI-only deployment automatically.
+
+## Selective / manual install
 
 \`\`\`bash
-mkdir -p ~/pylibs
-for whl in wheels/*.whl; do unzip -q -o "\$whl" -d ~/pylibs/; done
-export PYTHONPATH=~/pylibs:\$PYTHONPATH
-python3 -m femur_cli --help
+pip install --no-index --find-links=./wheels/ femur-cli          # CLI only
+# no pip, no root:
+mkdir -p ~/pylibs && for whl in wheels/*.whl; do unzip -q -o "\$whl" -d ~/pylibs/; done
+export PYTHONPATH=~/pylibs:\$PYTHONPATH && python3 -m femur_cli --help
 \`\`\`
 
-## Packages Included
+## Bundle contents
 
-- \`falcon-exposure-management-universal-reporter\` — Core API library
-- \`femur-pipeline\` — Data pipeline and output sinks
-- \`femur-cli\` — CLI tool (\`femur\` command)
-- \`femur-server\` — REST API server (\`femurd\` command)
-- All runtime dependencies
+- \`wheels/\` — all project + dependency wheels
+- \`requirements.lock\` — hash-pinned lockfile for the full install (\`--require-hashes\`)
+- \`requirements-cli.lock\` — hash-pinned lockfile for the \`--no-server\` (reporter) install
+- \`sbom.cdx.json\` — CycloneDX 1.5 SBOM for the full install (CLI + server)
+- \`sbom-cli.cdx.json\` — CycloneDX 1.5 SBOM for the reporter-only install
+- \`install.sh\`, \`upgrade.sh\`, \`uninstall.sh\`, \`merge_env.py\` — install lifecycle
+- \`femur-server.service\` — hardened systemd unit template (femurd)
+- \`femur.1\`, \`femurd.1\` — man pages
+- \`example.env\` — credentials template (CLIENT_ID / CLIENT_SECRET / BASE_URL)
 
 ## Verify
 
 \`\`\`bash
 femur --version
 femurd --version
+man femur
 \`\`\`
 EOF
 
@@ -332,7 +357,7 @@ EOF
     rm -rf "$BUNDLE_DIR"
 
     BUNDLE_SIZE=$(du -h "${BUNDLE_NAME}.tar.gz" | cut -f1)
-    echo "Created: dist/${BUNDLE_NAME}.tar.gz (${BUNDLE_SIZE})"
+    echo "Created: dist/${VERSION}/${BUNDLE_NAME}.tar.gz (${BUNDLE_SIZE})"
     echo ""
 done
 
@@ -344,6 +369,26 @@ echo "--- Generating checksums ---"
 cd "$DIST_DIR"
 shasum -a 256 ./*.whl ./*.tar.gz 2>/dev/null > SHA256SUMS
 cat SHA256SUMS
+echo ""
+
+# Optional GPG signing of the checksum file. Warns (does not fail) if no key is
+# available, so unsigned builds still succeed on hosts without a signing key.
+if command -v gpg &>/dev/null; then
+    GPG_ARGS=()
+    if [ -n "${GPG_SIGNING_KEY:-}" ]; then
+        GPG_ARGS=(--local-user "$GPG_SIGNING_KEY")
+    fi
+    # Expand the array in a way that is safe when empty under `set -u` (macOS bash 3.2).
+    if gpg ${GPG_ARGS[@]+"${GPG_ARGS[@]}"} --armor --detach-sign --output SHA256SUMS.asc SHA256SUMS 2>/dev/null; then
+        echo "Signed checksums: dist/${VERSION}/SHA256SUMS.asc"
+        echo "Verify with: gpg --verify SHA256SUMS.asc SHA256SUMS"
+    else
+        echo "NOTE: gpg present but signing failed (no default/usable key?); SHA256SUMS left unsigned."
+        echo "      Set GPG_SIGNING_KEY=<keyid> to sign, or sign manually later."
+    fi
+else
+    echo "NOTE: gpg not found; SHA256SUMS left unsigned."
+fi
 echo ""
 
 echo "Artifacts in: $DIST_DIR/"

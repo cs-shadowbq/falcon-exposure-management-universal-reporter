@@ -1,0 +1,86 @@
+# systemd unit template for the FEMUR inventory API server (femurd).
+#
+# This is a TEMPLATE. The airgap install.sh renders it with concrete paths for the
+# chosen layout (FHS or workspace) and installs the result to
+# /etc/systemd/system/femur.service. The @PLACEHOLDER@ tokens are substituted at
+# install time:
+#
+#   @EXEC@     -> absolute path to the femurd server (e.g. /usr/local/bin/femurd)
+#   @DATA@     -> data directory (JSONL inventory produced by femur; --data-dir)
+#   @CONFIG@   -> absolute path to the .env credentials file (--env-file)
+#   @LOGS@     -> log directory
+#   @HOST@     -> bind address (default: 127.0.0.1)
+#   @PORT@     -> bind port    (default: 8000)
+#   @USER@     -> service account (default: femur)
+#   @GROUP@    -> service group   (default: femur)
+#
+# To install by hand instead of via install.sh, replace the tokens yourself, then:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now femur
+#
+# Verify the applied sandbox with:  systemd-analyze security femur
+#
+# IMPORTANT: ProtectHome=yes (below) makes /home and /root invisible to this
+# service. Every path this unit references (@CONFIG@, @DATA@, @LOGS@) MUST live
+# outside home directories — use /etc, /var/lib, /var/log, /opt, or /srv. femurd
+# only SERVES pre-fetched data; populate @DATA@ first by running `femur
+# --output-dir @DATA@ -e @CONFIG@` (as @USER@) so no root-owned files are left
+# that the service user cannot read.
+
+[Unit]
+Description=FEMUR Inventory API Server
+Documentation=https://github.com/cs-shadowbq/falcon-exposure-management-universal-reporter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@GROUP@
+
+ExecStart=@EXEC@ --data-dir @DATA@ --env-file @CONFIG@ --host @HOST@ --port @PORT@
+Restart=on-failure
+RestartSec=10
+
+# --- Sandboxing / STIG hardening -------------------------------------------
+# Drop all privileges and privilege escalation.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Filesystem protection: read-only system, private tmp/home, explicit writable paths.
+ProtectSystem=strict
+ProtectHome=yes          # hides /home and /root — keep all @paths@ outside them
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=@DATA@ @LOGS@
+
+# Kernel / cgroup / namespace protection.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+MemoryDenyWriteExecute=yes
+
+# Network: only IPv4/IPv6 sockets (talks HTTPS to the Falcon API for background
+# re-fetch and serves the local HTTP API). No unix/netlink/packet families needed.
+RestrictAddressFamilies=AF_INET AF_INET6
+
+# Syscall allow-list: standard system-service profile, native arch only.
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# Logging to journald.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=femur
+
+[Install]
+WantedBy=multi-user.target

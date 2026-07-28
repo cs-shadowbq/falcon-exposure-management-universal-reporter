@@ -12,14 +12,33 @@ Usage::
 import argparse
 import os
 import sys
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Optional
 
 
-def main(argv: Optional[list[str]] = None) -> None:
-    """Start the inventory API server."""
+def _femurd_version() -> str:
+    """Return the installed femur-server version, or 'unknown' if not resolvable."""
+    try:
+        return _pkg_version("femur-server")
+    except PackageNotFoundError:  # running from a source tree without install
+        return "unknown"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the :mod:`argparse` parser for ``femurd``.
+
+    Extracted from :func:`main` so tooling (e.g. argparse-manpage) can import
+    the parser to generate the man page without invoking the server.
+    """
     parser = argparse.ArgumentParser(
         prog="femurd",
         description="Serve pre-fetched Falcon inventory data over HTTP.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"femurd {_femurd_version()}",
+        help="Show the femurd version and exit.",
     )
     parser.add_argument(
         "--data-dir",
@@ -67,7 +86,12 @@ def main(argv: Optional[list[str]] = None) -> None:
         choices=["debug", "info", "warning", "error", "critical"],
         help="Logging level (default: info).",
     )
+    return parser
 
+
+def main(argv: Optional[list[str]] = None) -> None:
+    """Start the inventory API server."""
+    parser = build_parser()
     args = parser.parse_args(argv)
 
     # Propagate config via env vars so factory workers can pick them up.

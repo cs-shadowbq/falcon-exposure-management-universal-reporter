@@ -1,0 +1,65 @@
+[=DESCRIPTION]
+Downloads CrowdStrike Falcon application inventory, Spotlight vulnerabilities, and
+Configuration Assessment results, fetching all three datasets concurrently, and
+writes them to a single JSON file or to per-dataset JSONL/XML files for downstream
+ingestion. Supports host-group/tag scoping, FQL filtering, large-environment
+parallelism, IAVM decoration, and per-AID output bucketing.
+.PP
+Credentials are read from a .env file (\fB\-\-env\-file\fR) or the environment. See
+\fBFILES\fR and \fBENVIRONMENT\fR below.
+.PP
+
+[>ENVIRONMENT]
+.TP
+.B CLIENT_ID, CLIENT_SECRET
+CrowdStrike API client credentials. Read from the environment when not supplied via
+the \fB\-\-env\-file\fR. Environment variables take precedence over file values.
+.TP
+.B BASE_URL
+Falcon API region/cloud (e.g. US1, US2, EU1, US-GOV-1). Default: US1.
+
+[>FILES]
+.TP
+.B .env
+Credentials file (CLIENT_ID, CLIENT_SECRET, BASE_URL). Read from the path given to
+\fB\-\-env\-file\fR, or ./.env in the current directory. Holds API credentials; keep
+it mode 0600.
+.TP
+.B <output-dir>/
+Destination for multi-file output formats (jsonl, xml), including the manifest and
+optional per-AID subdirectories.
+
+[>EXAMPLES]
+.TP
+Fetch all datasets using a credentials file:
+.B femur \-\-env\-file talon1.env
+.TP
+Write compact JSON to a specific file:
+.B femur \-e talon1.env \-o results.json \-\-indent 0
+.TP
+Scope every dataset to host groups and filter vulnerabilities:
+.B femur \-e talon1.env \-\-host\-groups "Production Servers" \-\-vuln\-filter "cve.severity:'CRITICAL'"
+.TP
+Large environment: enable the best-practice recipe and stream JSONL:
+.B femur \-e talon1.env \-\-large\-env \-\-output\-dir ./inventory
+.TP
+Bucket output per agent ID and compress:
+.B femur \-e talon1.env \-\-output\-dir ./inventory \-\-bucket\-by\-aid \-\-compress
+
+[>SUPPORT]
+FEMUR (Falcon Exposure Management Universal Reporter) is a community-driven, open
+source project, not a CrowdStrike product. As such, it carries no formal support,
+expressed or implied. For issue reporting guidance, questions, and confidentiality
+considerations, see the project on GitHub:
+.PP
+.B https://github.com/cs-shadowbq/falcon-exposure-management-universal-reporter
+.PP
+Report issues at:
+.B https://github.com/cs-shadowbq/falcon-exposure-management-universal-reporter/issues
+
+[>SEE ALSO]
+.B femurd (1)
+serves the datasets produced by femur over HTTP.
+.PP
+Project documentation and installation guidance are distributed with the release:
+INSTALL.md and the docs/ directory.

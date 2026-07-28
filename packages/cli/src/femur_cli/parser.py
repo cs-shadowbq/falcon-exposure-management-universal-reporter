@@ -1,6 +1,7 @@
 """Argument parser for the ``femur`` CLI."""
 
 import argparse
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
 from femur.spotlight import DEFAULT_VULN_FILTER
 from femur.configuration import DEFAULT_ASSESSMENT_FILTER
@@ -11,6 +12,14 @@ from .constants import (
     DEFAULT_OUTPUT_FORMAT,
     DEFAULT_VULN_WORKERS,
 )
+
+
+def _femur_version() -> str:
+    """Return the installed femur-cli version, or 'unknown' if not resolvable."""
+    try:
+        return _pkg_version("femur-cli")
+    except PackageNotFoundError:  # running from a source tree without install
+        return "unknown"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +50,13 @@ Examples:
   # Large environment: one flag enables the full best-practice recipe
   femur -e talon1.env --large-env --output-dir ./inventory
         """,
+    )
+
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"femur {_femur_version()}",
+        help="Show the femur version and exit.",
     )
 
     # ------------------------------------------------------------------

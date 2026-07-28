@@ -1,0 +1,62 @@
+[=DESCRIPTION]
+Serves pre-fetched CrowdStrike Falcon inventory data over HTTP. Reads the JSONL
+datasets and manifest produced by \fBfemur\fR from a data directory
+(\fB\-\-data\-dir\fR) and exposes them via a local REST API. Optionally re-fetches
+data in the background when it grows older than \fB\-\-max\-age\fR, using the
+credentials in \fB\-\-env\-file\fR.
+.PP
+femurd runs on uvicorn. For development, \fB\-\-reload\fR enables auto-reload; for
+production, \fB\-\-workers\fR sets the process count. See \fBFILES\fR and
+\fBENVIRONMENT\fR below.
+.PP
+
+[>ENVIRONMENT]
+.TP
+.B CLIENT_ID, CLIENT_SECRET, BASE_URL
+CrowdStrike API credentials and region used by background re-fetch jobs. Read from
+the file given to \fB\-\-env\-file\fR (or the environment).
+.TP
+.B FALCON_INVENTORY_DATA_DIR, FALCON_INVENTORY_ENV_FILE, FALCON_INVENTORY_MAX_AGE
+Set by femurd from the corresponding command-line options and read by the uvicorn
+worker processes. Normally you do not set these by hand.
+
+[>FILES]
+.TP
+.B <data-dir>/manifest.json
+Manifest describing the datasets femurd serves; produced by \fBfemur\fR.
+.TP
+.B <data-dir>/
+Directory of JSONL/XML dataset files produced by \fBfemur \-\-output\-dir\fR.
+.TP
+.B .env
+Credentials file for background re-fetch (\fB\-\-env\-file\fR). Keep it mode 0600.
+
+[>EXAMPLES]
+.TP
+Serve inventory on the default local address and port:
+.B femurd \-\-data\-dir ./inventory
+.TP
+Serve with credentials for background re-fetch, on a custom port:
+.B femurd \-d ./inventory \-e talon1.env \-\-port 9000
+.TP
+Bind all interfaces with multiple workers (behind a reverse proxy):
+.B femurd \-d ./inventory \-\-host 0.0.0.0 \-\-workers 4
+
+[>SUPPORT]
+FEMUR (Falcon Exposure Management Universal Reporter) is a community-driven, open
+source project, not a CrowdStrike product. As such, it carries no formal support,
+expressed or implied. For issue reporting guidance, questions, and confidentiality
+considerations, see the project on GitHub:
+.PP
+.B https://github.com/cs-shadowbq/falcon-exposure-management-universal-reporter
+.PP
+Report issues at:
+.B https://github.com/cs-shadowbq/falcon-exposure-management-universal-reporter/issues
+
+[>SEE ALSO]
+.B femur (1)
+produces the inventory datasets that femurd serves.
+.PP
+When installed as a systemd service, femurd runs sandboxed (see the shipped
+femur-server.service unit and INSTALL.md). Verify with:
+.B systemd-analyze security femur
