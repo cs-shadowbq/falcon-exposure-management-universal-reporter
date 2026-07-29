@@ -46,7 +46,8 @@ for path in files:
     with open(path) as f: content = f.read()
     with open(path, "w") as f: f.write(content.replace(f'version = "{old}"', f'version = "{new}"'))
     print(f"  {path}")
-print(f'Next: git commit -am "Release v{new}" && git tag v{new} && git push --tags')
+print(f'Confirm: git add .')	
+print(f'Next: git commit -am "Release v{new}" && git tag v{new} && git push --tags && git push')
 endef
 export BUMP_SCRIPT
 

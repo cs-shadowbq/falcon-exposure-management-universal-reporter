@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,6 +27,14 @@ from .models import ErrorResponse
 from .store import InventoryStore
 
 log = logging.getLogger("femur.server")
+
+
+def femurd_version() -> str:
+    """Return the installed femur-server version, or 'unknown' if not resolvable."""
+    try:
+        return _pkg_version("femur-server")
+    except PackageNotFoundError:  # running from a source tree without install
+        return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -126,7 +135,7 @@ def create_app(
             "the configured max-age, a background re-fetch is triggered "
             "automatically."
         ),
-        version="2.0.0",
+        version=femurd_version(),
         lifespan=lifespan,
         responses={
             503: {"model": ErrorResponse, "description": "Store not configured"},
@@ -180,7 +189,7 @@ def create_app(
     def root() -> dict[str, Any]:
         return {
             "service": "Falcon Inventory API",
-            "version": "2.0.0",
+            "version": femurd_version(),
             "docs": "/docs",
             "redoc": "/redoc",
             "openapi": "/openapi.json",

@@ -12,16 +12,9 @@ Usage::
 import argparse
 import os
 import sys
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
 from typing import Optional
 
-
-def _femurd_version() -> str:
-    """Return the installed femur-server version, or 'unknown' if not resolvable."""
-    try:
-        return _pkg_version("femur-server")
-    except PackageNotFoundError:  # running from a source tree without install
-        return "unknown"
+from .app import femurd_version
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version",
         action="version",
-        version=f"femurd {_femurd_version()}",
+        version=f"femurd {femurd_version()}",
         help="Show the femurd version and exit.",
     )
     parser.add_argument(

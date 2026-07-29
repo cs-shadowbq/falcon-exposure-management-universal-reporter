@@ -59,7 +59,7 @@ from .constants import (
     CORE_DATASETS,
 )
 from ._progress import ProgressReporter
-from .parser import build_parser
+from .parser import build_parser, _femur_version
 from ._fetchers import run_concurrent, run_concurrent_streaming
 
 # All interactive output goes to stderr so stdout stays clean for piping.
@@ -507,7 +507,7 @@ def _main_streaming(
                     datetime.now(timezone.utc).isoformat(),
                 )
                 sink.set_metadata("app_name", "falcon-exposure-management-universal-reporter")
-                sink.set_metadata("app_version", "2.0.0")
+                sink.set_metadata("app_version", _femur_version())
                 sink.set_metadata("command", " ".join(sys.argv))
                 if args.iavm_file:
                     from femur_pipeline.iavm import parse_iavm_metadata
