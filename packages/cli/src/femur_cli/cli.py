@@ -40,6 +40,7 @@ from femur import (
     augment_filter,
     collect_fetch_errors,
     decorate_applications_with_aid,
+    detect_workspace,
     load_credentials,
     resolve_group_names_to_ids,
     strip_compliance_mappings,
@@ -67,28 +68,48 @@ console = Console(stderr=True, highlight=False)
 log = logging.getLogger("femur")
 
 
-def _setup_logging(verbose: bool, log_file: Optional[str]) -> None:
+def _setup_logging(
+    console_level: int,
+    log_file: Optional[str],
+    file_level: int = logging.INFO,
+    trace_http: bool = False,
+    verbose_tracebacks: bool = False,
+) -> None:
     """Configure Python logging for the CLI session.
 
-    Always installs a :class:`~rich.logging.RichHandler` so any warnings
-    emitted by falconpy or urllib3 are rendered through Rich.  ``--verbose``
-    lowers the level to DEBUG.  ``--log-file`` additionally writes a plain-text
-    log with timestamps.
+    Installs a :class:`~rich.logging.RichHandler` for the console at
+    ``console_level`` and, when ``log_file`` is given, a plain-text
+    :class:`~logging.FileHandler` at ``file_level`` (independent of the
+    console). The root logger is pinned to ``min(console_level, file_level)``
+    so a level below both never even builds the record — preserving the
+    near-zero-cost fast path on the fetch worker threads.
+
+    Third-party per-request HTTP wire logging (falconpy / urllib3) is enabled
+    only when ``trace_http`` is set; otherwise those loggers stay at WARNING so
+    SDK warnings still surface without the per-request firehose. ``--verbose``
+    raises our own ``femur.*`` messages to DEBUG but does **not** imply
+    ``trace_http``.
+
+    Args:
+        console_level: Level for the Rich console handler.
+        log_file: Optional path for an additional plain-text log file.
+        file_level: Level for the file handler (default INFO).
+        trace_http: When True, set falconpy/urllib3 to DEBUG (high volume).
+        verbose_tracebacks: When True, show rich tracebacks with locals/paths.
     """
-    level = logging.DEBUG if verbose else logging.WARNING
     rich_handler = RichHandler(
         console=console,
         rich_tracebacks=True,
-        tracebacks_show_locals=verbose,
-        show_path=verbose,
+        tracebacks_show_locals=verbose_tracebacks,
+        show_path=verbose_tracebacks,
         markup=True,
     )
-    rich_handler.setLevel(level)
+    rich_handler.setLevel(console_level)
     handlers: List[logging.Handler] = [rich_handler]
 
     if log_file:
         file_handler = logging.FileHandler(log_file, encoding="utf-8")
-        file_handler.setLevel(logging.DEBUG)
+        file_handler.setLevel(file_level)
         file_handler.setFormatter(
             logging.Formatter(
                 "%(asctime)s  %(levelname)-8s  %(name)s: %(message)s",
@@ -97,21 +118,27 @@ def _setup_logging(verbose: bool, log_file: Optional[str]) -> None:
         )
         handlers.append(file_handler)
 
+    # The root/femur level must be low enough for the most verbose *active*
+    # handler; a file handler only exists when log_file is set.
+    effective = min(console_level, file_level) if log_file else console_level
+
     # Configure root logger explicitly. basicConfig(force=True) can sometimes
     # fail to attach the file handler when Rich's Live display is active.
     root = logging.getLogger()
-    root.setLevel(logging.DEBUG)
+    root.setLevel(effective)
     for h in root.handlers[:]:
         root.removeHandler(h)
         h.close()
     for h in handlers:
         root.addHandler(h)
-    # Explicitly set our own logger family to DEBUG so the file handler always
-    # captures INFO/DEBUG messages regardless of the console WARNING threshold.
-    logging.getLogger("femur").setLevel(logging.DEBUG)
-    # Inherit our level for falconpy and urllib3 so --verbose exposes HTTP traffic.
+    # Our own logger family follows the effective level so whichever handler
+    # wants INFO/DEBUG receives it, while suppressed levels short-circuit early.
+    logging.getLogger("femur").setLevel(effective)
+    # Per-request HTTP wire logging is opt-in via --trace-http; otherwise keep
+    # falconpy/urllib3 at WARNING so their genuine warnings still surface.
+    http_level = logging.DEBUG if trace_http else logging.WARNING
     for lib in ("falconpy", "urllib3", "urllib3.connectionpool"):
-        logging.getLogger(lib).setLevel(level)
+        logging.getLogger(lib).setLevel(http_level)
 
 
 # ---------------------------------------------------------------------------
@@ -152,9 +179,53 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    # --compressed-by-aid only makes sense as a per-AID archive, so it
+    # implies --bucket-by-aid (which routes records into by_aid/<aid>/).
+    # Without this the flag would be silently ignored on flat output.
+    if args.compressed_by_aid and not args.bucket_by_aid:
+        args.bucket_by_aid = True
+
     _expand_large_env(args)
 
-    _setup_logging(verbose=args.verbose, log_file=args.log_file)
+    # ------------------------------------------------------------------
+    # Workspace-aware defaults
+    # ------------------------------------------------------------------
+    # A workspace (built by `install.sh --type WORKSPACE`) is a directory
+    # holding .env + data/ + logs/, marked by WORKSPACE=true in its .env.
+    # When detected, default --output-dir to data/ and --log-file to logs/
+    # unless the user set them explicitly. The banner surfaces both.
+    ws_root = detect_workspace(args.env_file)
+    ws_output_auto = False
+    ws_log_auto = False
+    if ws_root:
+        # Auto output-dir only for multi-file formats (json has no dir concept).
+        if args.output_format != "json" and args.output_dir is None:
+            args.output_dir = os.path.join(ws_root, "data")
+            ws_output_auto = True
+        # Auto log-file only when logs/ already exists (never create it here).
+        logs_dir = os.path.join(ws_root, "logs")
+        if args.log_file is None and os.path.isdir(logs_dir):
+            from datetime import datetime, timezone
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            args.log_file = os.path.join(logs_dir, f"femur-{stamp}.log")
+            ws_log_auto = True
+
+    # Resolve log levels. --verbose is a shorthand for DEBUG (console + file)
+    # plus rich tracebacks, but it does NOT imply per-request HTTP logging;
+    # that stays opt-in via --trace-http.
+    console_level = logging.DEBUG if args.verbose else getattr(
+        logging, args.log_level
+    )
+    file_level = logging.DEBUG if args.verbose else getattr(
+        logging, args.log_file_level
+    )
+    _setup_logging(
+        console_level=console_level,
+        log_file=args.log_file,
+        file_level=file_level,
+        trace_http=args.trace_http,
+        verbose_tracebacks=args.verbose,
+    )
     log.info("Inventory run started")
 
     # ------------------------------------------------------------------
@@ -241,7 +312,9 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
 
     # Config summary table
     _print_config_summary(args, creds, app_filter, vuln_filter, assessment_filter,
-                          vuln_facet, assessment_facet)
+                          vuln_facet, assessment_facet,
+                          ws_root=ws_root, ws_output_auto=ws_output_auto,
+                          ws_log_auto=ws_log_auto)
 
     # ------------------------------------------------------------------
     # Concurrent fetch with live progress
@@ -270,12 +343,20 @@ def _print_config_summary(
     assessment_filter: Optional[str],
     vuln_facet: Optional[List[str]],
     assessment_facet: List[str],
+    ws_root: Optional[str] = None,
+    ws_output_auto: bool = False,
+    ws_log_auto: bool = False,
 ) -> None:
     """Print a Rich table summarising the current run configuration."""
     cfg = Table(box=None, show_header=False, padding=(0, 2))
     cfg.add_column(style="dim", no_wrap=True)
     cfg.add_column()
     cfg.add_row("Base URL", f"[bold]{creds['base_url']}[/bold]")
+    if ws_root:
+        cfg.add_row(
+            "Workspace",
+            f"[bold]{ws_root}[/bold] [dim](WORKSPACE=true in .env)[/dim]",
+        )
     cfg.add_row("Output", f"[bold]{args.output}[/bold]")
     if args.large_env:
         cfg.add_row("Mode", "[cyan]large-env (promoted recipe)[/cyan]")
@@ -287,9 +368,20 @@ def _print_config_summary(
     if output_format != "json":
         output_dir = args.output_dir or os.path.splitext(args.output)[0]
         cfg.add_row("Output format", f"[cyan]{output_format}[/cyan]")
-        cfg.add_row("Output dir", f"[bold]{output_dir}[/bold]")
-        if args.compressed:
-            cfg.add_row("Compression", "[cyan]zip[/cyan]")
+        output_dir_val = f"[bold]{output_dir}[/bold]"
+        if ws_output_auto:
+            output_dir_val += " [dim](workspace default)[/dim]"
+        cfg.add_row("Output dir", output_dir_val)
+        if args.bucket_by_aid:
+            if args.compressed_by_aid:
+                layout = "[cyan]by AID[/cyan] [dim](by_aid/<aid>.zip, one archive per agent ID)[/dim]"
+            elif args.compressed:
+                layout = "[cyan]by AID[/cyan] [dim](by_aid/<aid>/, files zipped individually)[/dim]"
+            else:
+                layout = "[cyan]by AID[/cyan] [dim](by_aid/<aid>/)[/dim]"
+            cfg.add_row("Output layout", layout)
+        elif args.compressed:
+            cfg.add_row("Compression", "[cyan]zip[/cyan] [dim](per file)[/dim]")
     cfg.add_row("Applications filter", app_filter or "[dim](all)[/dim]")
     if args.app_large_env:
         cfg.add_row("Applications mode", "[cyan]MAC-bucket parallel (16 threads)[/cyan]")
@@ -321,8 +413,15 @@ def _print_config_summary(
         cfg.add_row("Host map", "[yellow]skipped[/yellow]")
     if args.verbose:
         cfg.add_row("Verbose", "[yellow]on[/yellow]")
+    if args.trace_http:
+        cfg.add_row("HTTP trace", "[yellow]on[/yellow] [dim](per-request; high volume)[/dim]")
     if args.log_file:
-        cfg.add_row("Log file", f"[bold]{args.log_file}[/bold]")
+        log_file_val = f"[bold]{args.log_file}[/bold]"
+        if ws_log_auto:
+            log_file_val += " [dim](workspace default)[/dim]"
+        cfg.add_row("Log file", log_file_val)
+        file_lvl = "DEBUG" if args.verbose else args.log_file_level
+        cfg.add_row("Log file level", f"[cyan]{file_lvl}[/cyan]")
     console.print(cfg)
     console.print()
 

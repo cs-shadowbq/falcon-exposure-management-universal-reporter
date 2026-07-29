@@ -343,7 +343,17 @@ This flag implies `--decorate-aids` (applications need the `aid` field populated
 
 ### Compression
 
-Use `--compress` (or `--compressed`) to zip each output file individually after writing. Works with both flat and bucketed output, and any format (JSONL, XML). Manifest files stay uncompressed for discoverability.
+Two flags control on-disk layout and compression. `--compress` is standalone; `--compressed-by-aid` implies `--bucket-by-aid` (a per-AID archive requires per-AID buckets, so it turns bucketing on for you).
+
+| Flags | On-disk result |
+| --- | --- |
+| *(none)* | Flat files: `applications.jsonl`, `vulnerabilities.jsonl`, `manifest.json` |
+| `--compress` | Flat files, each zipped individually: `applications.jsonl.zip`, … (manifest stays plain) |
+| `--bucket-by-aid` | `by_aid/<aid>/` — one directory per host, uncompressed files |
+| `--bucket-by-aid --compress` | `by_aid/<aid>/` directories, each file zipped individually |
+| `--compressed-by-aid` | `by_aid/<aid>.zip` — one archive per host (implies `--bucket-by-aid`) |
+
+`--compress` (or `--compressed`) zips each output file individually after writing. It works with both flat and bucketed output and any format (JSONL, XML). Manifest files stay uncompressed for discoverability.
 
 ```bash
 # Flat output — each dataset file zipped individually
@@ -354,14 +364,52 @@ femur -e crowdstrike.env --output-format jsonl --compress --output-dir ./invento
 femur -e crowdstrike.env --bucket-by-aid --compress --output-dir ./inventory
 ```
 
-Use `--compressed-by-aid` (with `--bucket-by-aid`) to zip each AID folder into a single archive:
+`--compressed-by-aid` zips each AID folder into a single archive. It implies `--bucket-by-aid`, so you can pass it on its own:
 
 ```bash
-femur -e crowdstrike.env --bucket-by-aid --compressed-by-aid --output-dir ./inventory
-# Result: by_aid/190a664e08e2488ca2fc49b19a3a29ae.zip, manifest.json
+femur -e crowdstrike.env --compressed-by-aid --output-dir ./inventory
+# Result: by_aid/190a664e08e2488ca2fc49b19a3a29ae.zip, by_aid/manifest.json
 ```
 
 Compression is parallelized across AIDs (up to 8 threads) for scale.
+
+### Workspace defaults
+
+A **workspace** is a self-contained run directory holding `.env`, `data/`, and `logs/` — created by `install.sh --type WORKSPACE` (see [INSTALL.md](INSTALL.md)). When the `.env` at the workspace root contains `WORKSPACE=true`, `femur` recognises the layout and fills in sensible defaults so you don't repeat path flags on every run:
+
+- `--output-dir` defaults to `<workspace>/data` (multi-file formats only — JSONL/XML).
+- `--log-file` defaults to `<workspace>/logs/femur-<UTC-timestamp>.log`, but only if `logs/` already exists.
+
+```bash
+# Inside a workspace, this:
+femur --large-env
+# behaves like:
+femur --large-env --output-dir ./data --log-file ./logs/femur-20260728T162100Z.log
+```
+
+The workspace root is defined as the directory **containing** the `.env`, and the `.env` is located by walking up from the current directory — so the defaults resolve correctly even when you run `femur` from a subdirectory. Explicitly passing `--output-dir` or `--log-file` always overrides the default, and the config banner shows a `(workspace default)` marker whenever a value was auto-filled.
+
+`WORKSPACE=true` is set **only** by `install.sh --type WORKSPACE`. It is commented out in the repo's [example.env](example.env), so a plain `git clone` never triggers workspace behaviour.
+
+### Logging levels
+
+Console and log-file verbosity are controlled independently, so a workspace's default log file stays a compact audit trail even in very large environments:
+
+- `--log-level` sets the **console** level (default `WARNING`).
+- `--log-file-level` sets the **file** level (default `INFO` — records per-dataset start/stop timings without HTTP spam).
+- `--verbose`/`-v` is a shorthand for `--log-level DEBUG` plus full tracebacks, and raises the file to DEBUG too. It applies to femur's own `femur.*` logging.
+- `--trace-http` is the **only** flag that enables per-request HTTP wire logging from the SDK (`falconpy`) and `urllib3`. This is very high volume across the fetch worker threads and can produce a log file that rivals the data directory — enable it only when debugging API traffic.
+
+```bash
+# Troubleshoot femur's own logic without the HTTP firehose:
+femur --large-env --verbose
+
+# Debug actual API requests/responses (high volume):
+femur --large-env --trace-http --log-file ./debug.log
+
+# Quiet console, richer file audit trail:
+femur --large-env --log-level ERROR --log-file-level INFO --log-file ./run.log
+```
 
 ## Help
 
@@ -370,7 +418,8 @@ usage: femur [-h] [--env-file FILE] [--output FILE] [--output-format {json,jsonl
              [--vuln-filter FQL] [--assessment-filter FQL] [--host-groups NAMES] [--tags TAGS] [--large-env] [--app-large-env]
              [--worker-by-severity] [--vuln-workers N] [--assessment-large-env] [--decorate-aids] [--iavm-file FILE]
              [--assessment-evidence] [--vuln-facet FACET] [--assessment-compliance-mapping | --no-assessment-compliance-mapping]
-             [--skip-host-map] [--bucket-by-aid] [--compress] [--compressed-by-aid] [--indent N] [--verbose] [--log-file FILE]
+             [--skip-host-map] [--bucket-by-aid] [--compress] [--compressed-by-aid] [--indent N] [--verbose]
+             [--log-level {ERROR,WARNING,INFO,DEBUG}] [--log-file-level {ERROR,WARNING,INFO,DEBUG}] [--trace-http] [--log-file FILE]
 
 Download CrowdStrike Falcon application inventory, vulnerabilities, and configuration assessment results to a single JSON file. All three datasets are fetched concurrently.
 
@@ -381,7 +430,11 @@ Credentials & Output:
   Where credentials come from and how/where results are written.
 
   --env-file FILE, -e FILE
-                        Path to a .env file containing CLIENT_ID, CLIENT_SECRET, and optionally BASE_URL. Environment variables take priority over file values.
+                        Path to a .env file containing CLIENT_ID, CLIENT_SECRET, and optionally BASE_URL. If omitted, searches for a file named '.env' starting in the
+                        current directory and walking up parent directories until one is found. Environment variables already set in the shell always take priority over
+                        file values; a missing or misspelled path fails silently and falls back to those. Set WORKSPACE=true in the .env to mark its directory as a
+                        workspace root: --output-dir then defaults to ./data and --log-file to ./logs/ (set automatically by 'install.sh --type WORKSPACE').
+                        (default: ./.env or nearest ancestor)
   --output FILE, -o FILE
                         Output JSON file path (default: femur_inventory.json).
   --output-format {json,jsonl,xml}
@@ -458,13 +511,23 @@ Output Layout & Compression:
   --compress, --compressed
                         Zip each individual output file after writing. With --bucket-by-aid, zips per-AID files in parallel. Without --bucket-by-aid, zips the flat
                         output files (jsonl/xml). Originals are removed; manifest stays uncompressed for discoverability. (default: off)
-  --compressed-by-aid   When used with --bucket-by-aid, zip each AID directory into a single archive (e.g. 190a664e08e2488ca2fc49b19a3a29ae.zip). The directory is
-                        removed after archiving. Slower than --compress for selective access but produces fewer files. (default: off)
+  --compressed-by-aid   Zip each per-AID directory into a single archive (e.g. by_aid/190a664e08e2488ca2fc49b19a3a29ae.zip). Implies --bucket-by-aid: records are
+                        routed into per-agent-ID buckets, then each bucket is archived and its directory removed. Slower than --compressed for selective access but
+                        produces fewer files. (default: off)
   --indent N            JSON indentation spaces. Use 0 for compact output (default: 2).
 
 Logging:
-  --verbose, -v         Enable verbose logging (DEBUG level). Shows full tracebacks on failures and HTTP traffic from the SDK.
-  --log-file FILE       Write a timestamped plain-text log to FILE at DEBUG level in addition to the terminal output.
+  --verbose, -v         Shorthand for --log-level DEBUG plus full tracebacks on failures. Raises femur's own logging to DEBUG (console and file). Does NOT enable
+                        per-request HTTP wire logging — use --trace-http for that.
+  --log-level {ERROR,WARNING,INFO,DEBUG}
+                        Console log verbosity for femur's own messages. (default: WARNING). --verbose overrides this with DEBUG.
+  --log-file-level {ERROR,WARNING,INFO,DEBUG}
+                        Log verbosity written to --log-file, independent of the console level. INFO records per-dataset start/stop timings as a compact audit trail
+                        without HTTP spam. (default: INFO)
+  --trace-http          Enable per-request HTTP wire logging from the SDK (falconpy) and urllib3 at DEBUG. Very high volume in large environments — this is the only
+                        flag that produces it. (default: off)
+  --log-file FILE       Write a timestamped plain-text log to FILE in addition to the terminal. The file's verbosity is set by --log-file-level (default INFO), not the
+                        console level.
 
 Examples:
   femur --env-file crowdstrike.env

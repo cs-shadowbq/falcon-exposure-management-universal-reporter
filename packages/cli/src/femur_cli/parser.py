@@ -71,8 +71,16 @@ Examples:
         metavar="FILE",
         help=(
             "Path to a .env file containing CLIENT_ID, CLIENT_SECRET, "
-            "and optionally BASE_URL. Environment variables take priority "
-            "over file values."
+            "and optionally BASE_URL. If omitted, searches for a file named "
+            "'.env' starting in the current directory and walking up parent "
+            "directories until one is found. Environment variables already "
+            "set in the shell always take priority over file values; a "
+            "missing or misspelled path fails silently and falls back to "
+            "those. Set WORKSPACE=true in the .env to mark its directory as a "
+            "workspace root: --output-dir then defaults to ./data and "
+            "--log-file to ./logs/ (set automatically by "
+            "'install.sh --type WORKSPACE'). (default: ./.env or nearest "
+            "ancestor)"
         ),
     )
     g_io.add_argument(
@@ -371,11 +379,12 @@ Examples:
         action="store_true",
         default=False,
         help=(
-            "When used with --bucket-by-aid, zip each AID directory into a "
-            "single archive (e.g. 190a664e08e2488ca2fc49b19a3a29ae.zip). "
-            "The directory is removed after archiving. Slower than "
-            "--compressed for selective access but produces fewer files. "
-            "(default: off)"
+            "Zip each per-AID directory into a single archive "
+            "(e.g. by_aid/190a664e08e2488ca2fc49b19a3a29ae.zip). "
+            "Implies --bucket-by-aid: records are routed into per-agent-ID "
+            "buckets, then each bucket is archived and its directory removed. "
+            "Slower than --compressed for selective access but produces "
+            "fewer files. (default: off)"
         ),
     )
     g_layout.add_argument(
@@ -398,16 +407,48 @@ Examples:
         action="store_true",
         default=False,
         help=(
-            "Enable verbose logging (DEBUG level). Shows full tracebacks "
-            "on failures and HTTP traffic from the SDK."
+            "Shorthand for --log-level DEBUG plus full tracebacks on failures. "
+            "Raises our own femur.* logging to DEBUG (and the log file too). "
+            "NOTE: this no longer enables per-request HTTP wire logging — use "
+            "--trace-http for that."
+        ),
+    )
+    g_log.add_argument(
+        "--log-level",
+        choices=["ERROR", "WARNING", "INFO", "DEBUG"],
+        default="WARNING",
+        help=(
+            "Console log verbosity for femur's own messages. "
+            "(default: WARNING). --verbose overrides this with DEBUG."
+        ),
+    )
+    g_log.add_argument(
+        "--log-file-level",
+        choices=["ERROR", "WARNING", "INFO", "DEBUG"],
+        default="INFO",
+        help=(
+            "Log verbosity written to --log-file, independent of the console "
+            "level. INFO records per-dataset start/stop timings as a compact "
+            "audit trail without HTTP spam. (default: INFO)"
+        ),
+    )
+    g_log.add_argument(
+        "--trace-http",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable per-request HTTP wire logging from the SDK (falconpy) and "
+            "urllib3 at DEBUG. Very high volume in large environments — this "
+            "is the only flag that produces it. (default: off)"
         ),
     )
     g_log.add_argument(
         "--log-file",
         metavar="FILE",
         help=(
-            "Write a timestamped plain-text log to FILE at DEBUG level "
-            "in addition to the terminal output."
+            "Write a timestamped plain-text log to FILE in addition to the "
+            "terminal. The file's verbosity is set by --log-file-level "
+            "(default INFO), not the console level."
         ),
     )
 

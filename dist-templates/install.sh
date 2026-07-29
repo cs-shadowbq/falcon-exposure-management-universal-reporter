@@ -527,6 +527,14 @@ if [ "$TYPE" = "WORKSPACE" ]; then
         else
             cp "$SCRIPT_DIR/example.env" "$WORKSPACE/.env"
             chmod 600 "$WORKSPACE/.env"
+            # Mark this .env as a workspace root so `femur` defaults
+            # --output-dir to data/ and --log-file to logs/ automatically.
+            # (The repo's example.env keeps this commented, so a bare
+            # git-clone never triggers workspace behaviour.) Append before
+            # the config-hash below so the recorded hash matches contents.
+            if ! grep -qE '^[[:space:]]*WORKSPACE[[:space:]]*=' "$WORKSPACE/.env"; then
+                printf '\n# Workspace root marker (added by install.sh --type WORKSPACE).\nWORKSPACE=true\n' >> "$WORKSPACE/.env"
+            fi
             mset config "$WORKSPACE/.env" -
             mset config-hash "$WORKSPACE/.env" "$(sha256_of "$WORKSPACE/.env")"
             logline "seeded .env (0600) at $WORKSPACE/.env"

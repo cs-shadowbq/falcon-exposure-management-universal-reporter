@@ -2,7 +2,7 @@ import os
 
 import pytest
 
-from femur._auth import load_credentials
+from femur._auth import load_credentials, detect_workspace
 
 
 class TestLoadCredentials:
@@ -65,3 +65,68 @@ class TestLoadCredentials:
         assert creds["client_id"] == "direct_id"
         assert creds["client_secret"] == "direct_secret"
         assert creds["base_url"] == "US2"
+
+
+class TestDetectWorkspace:
+    @pytest.fixture(autouse=True)
+    def _clear_env(self, monkeypatch):
+        # Isolate from any ambient WORKSPACE so file values drive the test.
+        monkeypatch.delenv("WORKSPACE", raising=False)
+        yield
+
+    def test_true_in_env_returns_root(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("CLIENT_ID=x\nCLIENT_SECRET=y\nWORKSPACE=true\n")
+
+        root = detect_workspace(env_file=str(env_file))
+
+        assert root == str(tmp_path)
+
+    def test_root_is_env_dir_when_run_from_subdir(self, tmp_path, monkeypatch):
+        """Running from a nested dir still resolves the .env's directory."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("WORKSPACE=true\n")
+        subdir = tmp_path / "sub" / "deeper"
+        subdir.mkdir(parents=True)
+        monkeypatch.chdir(subdir)
+
+        # No explicit env_file → upward walk from cwd finds tmp_path/.env.
+        root = detect_workspace()
+
+        assert root == str(tmp_path)
+
+    def test_false_returns_none(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("WORKSPACE=false\n")
+
+        assert detect_workspace(env_file=str(env_file)) is None
+
+    def test_absent_flag_returns_none(self, tmp_path):
+        env_file = tmp_path / ".env"
+        env_file.write_text("CLIENT_ID=x\n")
+
+        assert detect_workspace(env_file=str(env_file)) is None
+
+    def test_missing_file_returns_none(self, tmp_path):
+        assert detect_workspace(env_file=str(tmp_path / "nope.env")) is None
+
+    def test_shell_env_overrides_file_false(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("WORKSPACE=false\n")
+        monkeypatch.setenv("WORKSPACE", "true")
+
+        assert detect_workspace(env_file=str(env_file)) == str(tmp_path)
+
+    def test_shell_env_false_overrides_file_true(self, tmp_path, monkeypatch):
+        env_file = tmp_path / ".env"
+        env_file.write_text("WORKSPACE=true\n")
+        monkeypatch.setenv("WORKSPACE", "0")
+
+        assert detect_workspace(env_file=str(env_file)) is None
+
+    def test_truthy_variants(self, tmp_path):
+        for val in ("1", "yes", "ON", "True"):
+            env_file = tmp_path / ".env"
+            env_file.write_text(f"WORKSPACE={val}\n")
+            assert detect_workspace(env_file=str(env_file)) == str(tmp_path)
+

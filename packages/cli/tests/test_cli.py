@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 from unittest.mock import AsyncMock, patch
 
@@ -282,6 +283,7 @@ class TestMainErrors:
 
 class TestLoggingFlags:
     def test_verbose_flag_calls_setup_logging_with_verbose_true(self, tmp_path):
+        import logging
         out = str(tmp_path / "out.json")
         # _suppress_logging_setup fixture patches _setup_logging; we inspect it.
         with (
@@ -293,9 +295,16 @@ class TestLoggingFlags:
         ):
             main(["--output", out, "--verbose"])
 
-        mock_setup.assert_called_once_with(verbose=True, log_file=None)
+        _, kwargs = mock_setup.call_args
+        # --verbose raises console + file to DEBUG and enables tracebacks,
+        # but must NOT enable per-request HTTP tracing.
+        assert kwargs["console_level"] == logging.DEBUG
+        assert kwargs["file_level"] == logging.DEBUG
+        assert kwargs["verbose_tracebacks"] is True
+        assert kwargs["trace_http"] is False
 
     def test_log_file_flag_calls_setup_logging_with_path(self, tmp_path):
+        import logging
         out = str(tmp_path / "out.json")
         log_path = str(tmp_path / "run.log")
         with (
@@ -307,20 +316,98 @@ class TestLoggingFlags:
         ):
             main(["--output", out, "--log-file", log_path])
 
-        mock_setup.assert_called_once_with(verbose=False, log_file=log_path)
+        _, kwargs = mock_setup.call_args
+        # Defaults: console WARNING, file INFO, no HTTP trace.
+        assert kwargs["log_file"] == log_path
+        assert kwargs["console_level"] == logging.WARNING
+        assert kwargs["file_level"] == logging.INFO
+        assert kwargs["trace_http"] is False
 
     def test_setup_logging_creates_log_file(self, tmp_path):
         """_setup_logging (real, not mocked) writes to the log file."""
-        log_path = str(tmp_path / "test.log")
-        _real_setup_logging(verbose=False, log_file=log_path)
-
         import logging
+        log_path = str(tmp_path / "test.log")
+        _real_setup_logging(console_level=logging.WARNING, log_file=log_path)
+
         logging.getLogger("femur").warning("test log entry")
 
         with open(log_path) as fh:
             content = fh.read()
 
         assert "test log entry" in content
+
+    def test_file_level_filters_below_threshold(self, tmp_path):
+        """The file handler honours file_level: INFO lands, DEBUG does not."""
+        import logging
+        log_path = str(tmp_path / "lvl.log")
+        _real_setup_logging(
+            console_level=logging.WARNING,
+            log_file=log_path,
+            file_level=logging.INFO,
+        )
+        femur_log = logging.getLogger("femur")
+        femur_log.info("info-should-appear")
+        femur_log.debug("debug-should-not-appear")
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        content = open(log_path).read()
+        assert "info-should-appear" in content
+        assert "debug-should-not-appear" not in content
+
+    def test_trace_http_off_keeps_falconpy_quiet(self, tmp_path):
+        """Without --trace-http, falconpy/urllib3 stay at WARNING even at DEBUG."""
+        import logging
+        _real_setup_logging(
+            console_level=logging.DEBUG,
+            log_file=str(tmp_path / "x.log"),
+            file_level=logging.DEBUG,
+            trace_http=False,
+        )
+        assert logging.getLogger("falconpy").level == logging.WARNING
+        assert logging.getLogger("urllib3").level == logging.WARNING
+
+    def test_trace_http_on_enables_wire_logging(self, tmp_path):
+        import logging
+        _real_setup_logging(
+            console_level=logging.WARNING,
+            log_file=str(tmp_path / "x.log"),
+            file_level=logging.INFO,
+            trace_http=True,
+        )
+        assert logging.getLogger("falconpy").level == logging.DEBUG
+        assert logging.getLogger("urllib3").level == logging.DEBUG
+
+    def test_log_level_flag_sets_console_level(self, tmp_path):
+        import logging
+        out = str(tmp_path / "out.json")
+        with (
+            patch("femur_cli.cli._setup_logging") as mock_setup,
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=[]),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=[]),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=[]),
+        ):
+            main(["--output", out, "--log-level", "DEBUG",
+                  "--log-file-level", "ERROR"])
+
+        _, kwargs = mock_setup.call_args
+        assert kwargs["console_level"] == logging.DEBUG
+        assert kwargs["file_level"] == logging.ERROR
+
+    def test_trace_http_flag_passes_through(self, tmp_path):
+        out = str(tmp_path / "out.json")
+        with (
+            patch("femur_cli.cli._setup_logging") as mock_setup,
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=[]),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=[]),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=[]),
+        ):
+            main(["--output", out, "--trace-http"])
+
+        _, kwargs = mock_setup.call_args
+        assert kwargs["trace_http"] is True
 
     def test_verbose_error_includes_traceback_panel(self, tmp_path):
         """With --verbose a failed fetch shows a Traceback in addition to the Panel."""
@@ -859,6 +946,127 @@ class TestPartialManifest:
 
         assert "partial" not in manifest
         assert "errors" not in manifest
+
+    def test_compressed_by_aid_implies_bucket_by_aid(self, tmp_path):
+        """--compressed-by-aid alone routes into by_aid/ and produces per-AID zips.
+
+        Regression: previously this flag was silently ignored without an
+        explicit --bucket-by-aid, yielding flat uncompressed output.
+        """
+        out_dir = str(tmp_path / "inv")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=APPS),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=VULNS),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=ASSESSMENTS),
+        ):
+            main([
+                "--output-format", "jsonl", "--skip-host-map",
+                "--output-dir", out_dir, "--compressed-by-aid",
+            ])
+
+        by_aid = tmp_path / "inv" / "by_aid"
+        assert by_aid.is_dir(), "by_aid/ directory should exist"
+        # Per-AID archives, not flat directories.
+        zips = list(by_aid.glob("*.zip"))
+        assert zips, "expected at least one per-AID .zip archive"
+        # No uncompressed per-AID directories should remain.
+        assert not any(p.is_dir() for p in by_aid.iterdir())
+
+
+class TestWorkspaceDefaults:
+    """WORKSPACE=true in .env auto-fills --output-dir and --log-file."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_ws_env(self, monkeypatch):
+        monkeypatch.delenv("WORKSPACE", raising=False)
+        yield
+
+    def _make_workspace(self, tmp_path, workspace=True):
+        """Build a workspace dir with .env, data/, logs/ and return its path."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "data").mkdir()
+        (ws / "logs").mkdir()
+        flag = "WORKSPACE=true\n" if workspace else ""
+        (ws / ".env").write_text(f"CLIENT_ID=x\nCLIENT_SECRET=y\n{flag}")
+        return ws
+
+    def test_output_dir_and_log_file_default_into_workspace(self, tmp_path):
+        ws = self._make_workspace(tmp_path)
+        env_file = str(ws / ".env")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli.cli._setup_logging") as mock_logging,
+            patch("femur_cli._fetchers.iter_applications", return_value=APPS),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=VULNS),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=ASSESSMENTS),
+        ):
+            main(["--env-file", env_file, "--output-format", "jsonl", "--skip-host-map"])
+
+        # Output landed in the workspace data/ dir.
+        assert (ws / "data" / "manifest.json").exists()
+        # Logging was configured with a timestamped path under logs/.
+        _, kwargs = mock_logging.call_args
+        log_file = kwargs["log_file"]
+        assert log_file is not None
+        assert log_file.startswith(str(ws / "logs"))
+        assert os.path.basename(log_file).startswith("femur-")
+        assert log_file.endswith(".log")
+
+    def test_explicit_output_dir_overrides_workspace(self, tmp_path):
+        ws = self._make_workspace(tmp_path)
+        env_file = str(ws / ".env")
+        explicit = str(tmp_path / "elsewhere")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=APPS),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=VULNS),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=ASSESSMENTS),
+        ):
+            main([
+                "--env-file", env_file, "--output-format", "jsonl",
+                "--skip-host-map", "--output-dir", explicit,
+            ])
+
+        assert (tmp_path / "elsewhere" / "manifest.json").exists()
+        assert not (ws / "data" / "manifest.json").exists()
+
+    def test_no_logs_dir_means_no_auto_log(self, tmp_path):
+        ws = self._make_workspace(tmp_path)
+        # Remove logs/ so auto-logging must be skipped (never created here).
+        (ws / "logs").rmdir()
+        env_file = str(ws / ".env")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=APPS),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=VULNS),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=ASSESSMENTS),
+        ):
+            main(["--env-file", env_file, "--output-format", "jsonl", "--skip-host-map"])
+
+        # data/ still used, but logs/ was not resurrected.
+        assert (ws / "data" / "manifest.json").exists()
+        assert not (ws / "logs").exists()
+
+    def test_non_workspace_env_does_not_default(self, tmp_path):
+        ws = self._make_workspace(tmp_path, workspace=False)
+        env_file = str(ws / ".env")
+        out_dir = str(tmp_path / "explicit_out")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli._fetchers.iter_applications", return_value=APPS),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=VULNS),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=ASSESSMENTS),
+        ):
+            main([
+                "--env-file", env_file, "--output-format", "jsonl",
+                "--skip-host-map", "--output-dir", out_dir,
+            ])
+
+        # Without WORKSPACE=true, data/ is untouched and no auto log appears.
+        assert not (ws / "data" / "manifest.json").exists()
+        assert not list((ws / "logs").glob("femur-*.log"))
 
 
 class TestParserGrouping:

@@ -11,7 +11,7 @@ For the CLI tool, install ``femur-cli``.
 For the REST API server, install ``femur-server``.
 """
 
-from ._auth import load_credentials
+from ._auth import load_credentials, detect_workspace
 from ._exceptions import FalconAPIError
 from ._pagination import build_fql
 from .filters import (
@@ -63,6 +63,7 @@ from .spotlight import (
 __all__ = [
     # Auth
     "load_credentials",
+    "detect_workspace",
     # Exceptions
     "FalconAPIError",
     # Utilities
