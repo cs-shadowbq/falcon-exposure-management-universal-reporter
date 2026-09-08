@@ -670,6 +670,7 @@ def build_host_map(
     page_size: int = 1000,
     on_page: Optional[Callable[[int, Optional[int]], None]] = None,
     fql_filter: Optional[str] = None,
+    fql_filter_alternates: Optional[List[str]] = None,
 ) -> Dict[str, Dict[str, str]]:
     """Build a lookup from Discover host ID to CID and agent ID (aid / device_id).
 
@@ -696,8 +697,11 @@ def build_host_map(
     it the map covers every sensor-managed host in the CID, which for a run
     scoped to one host group means fetching — and, under ``--bucket-by-aid``,
     creating a directory for — orders of magnitude more hosts than needed.
-    Because the correct group field varies by endpoint, an unsupported filter
-    is reported and then retried unscoped rather than failing the run.
+    The Discover hosts endpoint documents ``groups`` as an exact-match filter
+    field but does not say whether the value is a group *name* or a group *ID*,
+    so *fql_filter_alternates* lets a caller offer both forms.  Each candidate
+    is tried in turn and the first that actually selects hosts wins; if none
+    do, the map is rebuilt unscoped rather than failing the run.
 
     Args:
         credentials: Dict with ``client_id``, ``client_secret``, ``base_url``.
@@ -706,7 +710,9 @@ def build_host_map(
         on_page: Optional callback invoked after each page with
             ``(n_records, total)``.  Used by the CLI for progress display.
         fql_filter: Optional FQL scope clause, AND-ed with the ``aid`` filter.
-            Rejected filters fall back to an unscoped query.
+        fql_filter_alternates: Further scope clauses to try, in order, when
+            *fql_filter* is rejected or selects no hosts.  Use this when the
+            correct value form is unknown (e.g. group name versus group ID).
 
     Returns:
         ``{discover_host_id: {"cid": cid, "aid": aid}}`` dict.
@@ -717,7 +723,6 @@ def build_host_map(
     _log = logging.getLogger("femur.discover")
     falcon = Discover(**credentials)
     base_filter = "aid:!''"
-    combined = f"{base_filter}+{fql_filter}" if fql_filter else base_filter
 
     def _collect(host_filter: str) -> Dict[str, Dict[str, str]]:
         collected: Dict[str, Dict[str, str]] = {}
@@ -738,23 +743,72 @@ def build_host_map(
     if not fql_filter:
         return _collect(base_filter)
 
-    try:
-        return _collect(combined)
-    except FalconAPIError as exc:
-        # A scope clause the hosts endpoint does not accept must not cost the
-        # whole run: report it and fall back to the unscoped map, which is the
-        # behaviour callers had before scoping existed.
-        if is_local_exhaustion(exc):
-            raise
-        _log.warning(
-            "Host map scope filter %r was rejected (%s) — falling back to an "
-            "unscoped host map. Every sensor-managed host in the CID will be "
-            "included, which under --bucket-by-aid means one output directory "
-            "per host.",
-            fql_filter,
-            exc,
+    # Try each candidate scope in turn.  The Discover hosts endpoint documents
+    # ``groups`` as filterable but does not say whether the value is a group
+    # name or a group ID, so callers pass both forms and the first one that
+    # actually selects hosts wins.
+    candidates = [fql_filter] + [
+        alt for alt in (fql_filter_alternates or []) if alt and alt != fql_filter
+    ]
+
+    for attempt, candidate in enumerate(candidates, start=1):
+        combined = f"{base_filter}+{candidate}"
+        try:
+            scoped = _collect(combined)
+        except FalconAPIError as exc:
+            # Descriptor exhaustion is fatal; retrying cannot help.
+            if is_local_exhaustion(exc):
+                raise
+            _log.warning(
+                "Host map scope filter %r was rejected (%s)%s",
+                candidate,
+                exc,
+                _next_candidate_note(attempt, candidates),
+            )
+            continue
+
+        # A rejected filter is the easy case.  The dangerous one is a filter
+        # that parses but selects nothing: FQL answers HTTP 200 with an empty
+        # result set and no error, so a status-code check passes and the caller
+        # sees an empty fleet rather than a bad filter.  An empty host map here
+        # would silently disable aid decoration and route every record to
+        # _no_aid, so treat it exactly like a rejection.
+        if not scoped:
+            _log.warning(
+                "Host map scope filter %r parsed but matched no hosts "
+                "(HTTP 200, zero rows) — which is how an unsupported FQL value "
+                "fails on this API%s",
+                candidate,
+                _next_candidate_note(attempt, candidates),
+            )
+            continue
+
+        _log.info(
+            "Host map scoped by %r: %d hosts. Compare this against the "
+            "expected size of the scope — a count matching the whole tenant "
+            "means the clause was accepted but ignored.",
+            candidate,
+            len(scoped),
         )
-        return _collect(base_filter)
+        return scoped
+
+    _log.warning(
+        "No host map scope filter selected any hosts (tried %d: %s) — falling "
+        "back to an unscoped host map. Every sensor-managed host in the CID "
+        "will be included, which under --bucket-by-aid means one output "
+        "directory per host. If the scope is genuinely empty, use "
+        "--skip-host-map instead.",
+        len(candidates),
+        ", ".join(repr(c) for c in candidates),
+    )
+    return _collect(base_filter)
+
+
+def _next_candidate_note(attempt: int, candidates: List[str]) -> str:
+    """Describe what happens after a failed scope attempt, for log messages."""
+    if attempt < len(candidates):
+        return f" — trying {candidates[attempt]!r} next."
+    return " — no candidates left; falling back to an unscoped host map."
 
 
 def decorate_applications_with_aid(
