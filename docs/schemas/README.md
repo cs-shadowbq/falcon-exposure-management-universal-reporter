@@ -163,13 +163,17 @@ output_dir/
 
 ```text
 output_dir/by_aid/
-    manifest.{json,xml}                                        (aggregate)
-    {aid}/
-        applications--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
-        vulnerabilities--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
-        assessments--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
-        host_map--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
-        manifest--{cid_first12}--{aid}--{epoch}.{json,xml}     (per-AID)
+    manifest.{json,xml}                                            (aggregate)
+    {shard}/                                                       (aid[:2] by default)
+        {aid}/
+            applications--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
+            vulnerabilities--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
+            assessments--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
+            host_map--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
+            manifest--{cid_first12}--{aid}--{epoch}.{json,xml}      (per-AID)
+    _no_aid/                                                       (never sharded)
+        host_map--unknown--_no_aid--{epoch}.{jsonl,xml}
+        manifest--unknown--_no_aid--{epoch}.{json,xml}
 ```
 
 File naming tokens:
@@ -177,7 +181,24 @@ File naming tokens:
 - `{dataset}` — report type (applications, vulnerabilities, assessments, host_map, manifest)
 - `{cid_first12}` — first 12 characters of the CrowdStrike Customer ID
 - `{aid}` — full Falcon Agent ID
+- `{shard}` — the AID's first `--aid-shard-depth` characters (default 2), used as an
+  intermediate directory so no single directory holds every host. AIDs are lowercase hex,
+  so depth 2 yields at most 256 shards. `--aid-shard-depth 0` writes the flat
+  `by_aid/{aid}/` layout instead.
 - `{epoch}` — Unix timestamp (seconds) of the run start time
+
+**Deriving the path.** The shard is always `aid[:depth]`, so it is computable from the AID
+alone — no lookup table is needed. The aggregate manifest's `aid_directories` therefore
+lists **bare AIDs**, not shard-relative paths; join them yourself:
+
+```python
+path = f"by_aid/{aid[:2]}/{aid}"     # depth 2 (default)
+```
+
+> **Consumers reading pre-2.2 output.** Sharding changed the path depth. A glob of
+> `by_aid/*/` now matches shard directories rather than AID directories — use
+> `by_aid/*/*/` for sharded output, or run with `--aid-shard-depth 0` to keep the old
+> layout. `_no_aid` stays at the top level in both.
 
 ## Optional Enrichments
 
@@ -278,9 +299,9 @@ consumers validating against the published `1.0.0` schemas.
 xmllint --schema docs/schemas/applications.xsd output/applications.xml --noout
 xmllint --schema docs/schemas/manifest.xsd output/manifest.xml --noout
 
-# Bucketed output — single AID
+# Bucketed output — single AID (shard is aid[:2] by default)
 xmllint --schema docs/schemas/vulnerabilities.xsd \
-  output/by_aid/{aid}/vulnerabilities--{cid}--{aid}--{epoch}.xml --noout
+  output/by_aid/{aid:0:2}/{aid}/vulnerabilities--{cid}--{aid}--{epoch}.xml --noout
 
 # Bucketed output — aggregate manifest
 xmllint --schema docs/schemas/manifest-aggregate.xsd output/by_aid/manifest.xml --noout

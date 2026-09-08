@@ -345,19 +345,24 @@ Use `--bucket-by-aid` to route records into per-AID subdirectories at write time
 femur -e crowdstrike.env --bucket-by-aid --output-dir ./inventory
 ```
 
-Files follow the naming convention `{dataset}--{cid}--{aid}--{epoch}.jsonl` where the epoch is the run start time (Unix seconds). This makes files self-describing and sortable:
+Files follow the naming convention `{dataset}--{cid}--{aid}--{epoch}.jsonl` where the epoch is the run start time (Unix seconds). This makes files self-describing and sortable. AID directories are grouped under a short **shard** directory taken from the AID's first two characters, so no single directory holds every host:
 
 ```
 inventory/by_aid/
-    190a664e08e2488ca2fc49b19a3a29ae/
-        vulnerabilities--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1780963200.jsonl
-        applications--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1780963200.jsonl
-        manifest--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1780963200.json
-    eb083e8db5834b1aa60818dd91c606dd/
-        vulnerabilities--7277b699df52--eb083e8db5834b1aa60818dd91c606dd--1780963200.jsonl
-        manifest--7277b699df52--eb083e8db5834b1aa60818dd91c606dd--1780963200.json
+    19/
+        190a664e08e2488ca2fc49b19a3a29ae/
+            vulnerabilities--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1780963200.jsonl
+            applications--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1780963200.jsonl
+            manifest--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1780963200.json
+    eb/
+        eb083e8db5834b1aa60818dd91c606dd/
+            vulnerabilities--7277b699df52--eb083e8db5834b1aa60818dd91c606dd--1780963200.jsonl
+            manifest--7277b699df52--eb083e8db5834b1aa60818dd91c606dd--1780963200.json
+    _no_aid/
     manifest.json
 ```
+
+The shard for any AID is simply its first two characters, so `by_aid/f8/f813cb0b.../` for AID `f813cb0b...`. The aggregate `manifest.json` lists **bare AIDs**, not shard-relative paths — join them yourself with `aid[:2]`. The `_no_aid` bucket is never sharded.
 
 Each per-AID manifest includes record counts, provenance (app name, version, CLI command), and IAVM severity breakdown when `--iavm-file` is used. The aggregate `manifest.json` summarizes totals across all hosts.
 
@@ -365,11 +370,19 @@ This flag implies `--decorate-aids` (applications need the `aid` field populated
 
 #### Scale: one directory per host
 
-The output tree grows with host count, not data volume: each AID directory holds up to five small files, so 100K hosts is ~500K files and ~100K directories. Two things follow.
+The output tree grows with host count, not data volume: each AID directory holds up to five small files, so 100K hosts is ~500K files. Three things follow.
+
+**AID directories are sharded by default.** `--aid-shard-depth` (default `2`) puts each AID under a directory named by its leading characters. AIDs are hex, so each character gives 16 shards — depth 2 gives 256, keeping any one directory to a few thousand entries even at 600K+ hosts. `--aid-shard-depth 0` restores the flat `by_aid/<aid>/` layout.
+
+| Depth | Shards | Subdirs per shard at 625K hosts | Hosts before a 64,999-subdir cap |
+|-------|--------|--------------------------------|----------------------------------|
+| `0` (flat) | — | 625,389 | 64,999 |
+| `1` | 16 | 39,086 | 1,039,984 |
+| `2` (default) | 256 | 2,442 | 16,639,744 |
 
 **Scope the run.** `--host-groups` is applied to the host map as well as to the datasets, so scoping the run also scopes the number of AID buckets. Without it the host map covers every sensor-managed host in the CID, and every one of them gets a directory — even if you only asked for one host group. A run is logged with its projected directory and file counts as the AID count crosses each 50,000 boundary.
 
-**Watch the filesystem, not the descriptor limit.** Descriptors are bounded regardless of host count (see [Output Formats](#output-formats)), but inode count and directory-entry limits are not. On ext3, and on ext4 without the `dir_nlink` feature, a directory caps at ~64,999 subdirectories and further writes fail with `[Errno 31] Too many links` — a filesystem limit, not a tool limit. Consider `--compressed-by-aid` to collapse each host into a single archive.
+**Check inodes, not the descriptor limit.** Descriptors are bounded regardless of host count (see [Output Formats](#output-formats)), but inode count is not — check `df -i` on the output filesystem. Sharding also sidesteps the per-directory subdirectory cap that ext3, and ext4 without the `dir_nlink` feature, impose at ~64,999 entries (`[Errno 31] Too many links`). RHEL 9 defaults to XFS, which has no such cap, and modern ext4 enables `dir_nlink`, so this is insurance rather than a limit most deployments would meet.
 
 ### Compression
 
@@ -379,9 +392,10 @@ Two flags control on-disk layout and compression. `--compress` is standalone; `-
 | --- | --- |
 | *(none)* | Flat files: `applications.jsonl`, `vulnerabilities.jsonl`, `manifest.json` |
 | `--compress` | Flat files, each zipped individually: `applications.jsonl.zip`, … (manifest stays plain) |
-| `--bucket-by-aid` | `by_aid/<aid>/` — one directory per host, uncompressed files |
-| `--bucket-by-aid --compress` | `by_aid/<aid>/` directories, each file zipped individually |
-| `--compressed-by-aid` | `by_aid/<aid>.zip` — one archive per host (implies `--bucket-by-aid`) |
+| `--bucket-by-aid` | `by_aid/<shard>/<aid>/` — one directory per host, uncompressed files |
+| `--bucket-by-aid --compress` | `by_aid/<shard>/<aid>/` directories, each file zipped individually |
+| `--compressed-by-aid` | `by_aid/<shard>/<aid>.zip` — one archive per host (implies `--bucket-by-aid`) |
+| `--aid-shard-depth 0` | Removes the `<shard>/` level, restoring the flat `by_aid/<aid>/` layout |
 
 `--compress` (or `--compressed`) zips each output file individually after writing. It works with both flat and bucketed output and any format (JSONL, XML). Manifest files stay uncompressed for discoverability.
 
@@ -394,7 +408,7 @@ femur -e crowdstrike.env --output-format jsonl --compress --output-dir ./invento
 femur -e crowdstrike.env --bucket-by-aid --compress --output-dir ./inventory
 ```
 
-`--compressed-by-aid` zips each AID folder into a single archive. It implies `--bucket-by-aid`, so you can pass it on its own:
+`--compressed-by-aid` zips each AID folder into a single archive, in place inside its shard directory. It implies `--bucket-by-aid`, so you can pass it on its own:
 
 ```bash
 femur -e crowdstrike.env --compressed-by-aid --output-dir ./inventory

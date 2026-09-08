@@ -14,11 +14,15 @@ Two limits are still worth checking before a large run:
   a container is set by the container runtime and is often not what `ulimit -n` reports in
   your shell. `femur` raises its soft limit to the hard limit at startup and prints both in
   the run banner when `--bucket-by-aid` is used.
-- **Inodes and directory entries.** `--bucket-by-aid` writes one directory per host and up
-  to five small files in each, so 100K hosts is ~500K files. Check `df -i` on the output
-  filesystem. On ext3, and on ext4 without the `dir_nlink` feature, a single directory caps
-  at ~64,999 subdirectories and further writes fail with `[Errno 31] Too many links`; run
-  `tune2fs -l <device> | grep features` to confirm `dir_nlink` is present.
+- **Inodes.** `--bucket-by-aid` writes one directory per host and up to five small
+  files in each, so 100K hosts is ~500K files. Check `df -i` on the output filesystem.
+- **Per-directory subdirectory caps.** AID directories are sharded by default
+  (`--aid-shard-depth 2`, giving 256 shards), so no single directory holds every host.
+  This matters only on ext3, or ext4 with the `dir_nlink` feature disabled, which cap a
+  directory at ~64,999 subdirectories and fail with `[Errno 31] Too many links`. RHEL 9
+  defaults to **XFS**, which has no such cap, and modern ext4 enables `dir_nlink` — so
+  for a default RHEL 9 install this is insurance, not a limit you would hit. Confirm with
+  `df -T <output-dir>` and, if ext4, `tune2fs -l <device> | grep features`.
 
 ## Standard Install (from GitHub Release)
 

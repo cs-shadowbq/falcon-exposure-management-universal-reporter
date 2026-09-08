@@ -5,21 +5,32 @@ with files named using the convention::
 
     {dataset}--{cid}--{aid}--{epoch}.{ext}
 
-Output structure::
+Output structure — AIDs are grouped under a short shard directory taken from
+their leading characters, so no single directory holds every host::
 
     output_dir/
         by_aid/
-            190a664e08e2488ca2fc49b19a3a29ae/
-                vulnerabilities--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1749465600.jsonl
-                applications--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1749465600.jsonl
-                manifest--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1749465600.json
-            eb083e8db5834b1aa60818dd91c606dd/
-                vulnerabilities--7277b699df52--eb083e8db5834b1aa60818dd91c606dd--1749465600.jsonl
-                manifest--7277b699df52--eb083e8db5834b1aa60818dd91c606dd--1749465600.json
+            19/
+                190a664e08e2488ca2fc49b19a3a29ae/
+                    vulnerabilities--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1749465600.jsonl
+                    applications--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1749465600.jsonl
+                    manifest--5ddb0407bef2--190a664e08e2488ca2fc49b19a3a29ae--1749465600.json
+            eb/
+                eb083e8db5834b1aa60818dd91c606dd/
+                    vulnerabilities--7277b699df52--eb083e8db5834b1aa60818dd91c606dd--1749465600.jsonl
+                    manifest--7277b699df52--eb083e8db5834b1aa60818dd91c606dd--1749465600.json
             _no_aid/
                 host_map--unknown--_no_aid--1749465600.jsonl
                 manifest--unknown--_no_aid--1749465600.json
             manifest.json
+
+Scale note — directory fan-out
+------------------------------
+AIDs are lowercase hex, so each shard character yields 16 buckets; the default
+depth of 2 gives 256, holding any one directory to a few thousand entries even
+in a tenant with hundreds of thousands of hosts.  ``aid_shard_depth=0``
+restores the flat ``by_aid/<aid>/`` layout.  The shard for any AID is simply
+``aid[:depth]``, so the aggregate manifest keeps listing bare AIDs.
 
 Scale note — file descriptors
 -----------------------------
@@ -97,6 +108,17 @@ _FANOUT_WARN_AT = 50_000
 
 # Datasets plus manifest, i.e. the upper bound on files per AID directory.
 _FILES_PER_AID = 5
+
+# Bucket name for records that carry no aid.
+_NO_AID_KEY = "_no_aid"
+
+# Leading AID characters used as an intermediate shard directory.  AIDs are
+# lowercase hex, so each character yields 16 shards: depth 2 gives 256, keeping
+# any single directory to a few thousand entries even in the largest tenants.
+# A flat layout puts every AID in one directory, which stays correct but makes
+# ordinary tooling (ls, tab-completion, tar, backup agents) painful, and would
+# hit the ~64,999 subdirectory cap on ext3 or ext4 without dir_nlink.
+DEFAULT_AID_SHARD_DEPTH = 2
 
 
 def _write_all(fd: int, buf: bytes) -> None:
@@ -206,6 +228,10 @@ class _AidFileSet:
             os.mkdir(self._output_dir)
         except FileExistsError:
             pass
+        except FileNotFoundError:
+            # First AID to land in this shard, so the shard directory does not
+            # exist yet.  Only taken once per shard, not once per AID.
+            os.makedirs(self._output_dir, exist_ok=True)
         self._dir_created = True
 
     def open_dataset(self, dataset_name: str) -> None:
@@ -336,6 +362,12 @@ class AidBucketedSink(DataSink):
     aid_prefix_len : int
         Number of characters from the AID to use in directory names.
         Default 32 (full AID).
+    aid_shard_depth : int
+        Number of leading AID characters used as an intermediate shard
+        directory, so no single directory holds every host. Default 2 (256
+        shards, since AIDs are hex). ``0`` writes the flat
+        ``by_aid/<aid>/`` layout. Clamped to *aid_prefix_len*. The
+        ``_no_aid`` bucket is never sharded.
     compressed : bool
         When ``True``, each individual output file is zipped after writing
         (e.g. ``vulnerabilities--...--1780963200.jsonl.zip``). Originals
@@ -351,6 +383,7 @@ class AidBucketedSink(DataSink):
         output_dir: str,
         output_format: str = "jsonl",
         aid_prefix_len: int = 32,
+        aid_shard_depth: int = DEFAULT_AID_SHARD_DEPTH,
         compressed: bool = False,
         compressed_by_aid: bool = False,
         **kwargs: Any,
@@ -358,6 +391,7 @@ class AidBucketedSink(DataSink):
         self._output_dir = os.path.join(output_dir, "by_aid")
         self._fmt = output_format
         self._prefix_len = aid_prefix_len
+        self._shard_depth = max(0, min(int(aid_shard_depth), aid_prefix_len))
         self._compressed = compressed
         self._compressed_by_aid = compressed_by_aid
         self._filesets: Dict[str, _AidFileSet] = {}
@@ -381,14 +415,31 @@ class AidBucketedSink(DataSink):
                 pass
         return str(int(datetime.now(timezone.utc).timestamp()))
 
+    def _shard(self, key: str) -> str:
+        """Return the shard directory component for an AID key, or ``""``.
+
+        The ``_no_aid`` bucket is never sharded: it is a single directory, so
+        it carries no fan-out risk and is easier to find at the top level.
+        """
+        if not self._shard_depth or key == _NO_AID_KEY:
+            return ""
+        return key[:self._shard_depth]
+
+    def _aid_dir(self, key: str) -> str:
+        """Absolute path to an AID's output directory, including its shard."""
+        shard = self._shard(key)
+        if shard:
+            return os.path.join(self._output_dir, shard, key)
+        return os.path.join(self._output_dir, key)
+
     def _get_fileset(self, aid: str, cid: str) -> _AidFileSet:
         """Get or create the file set for the given AID."""
-        key = aid[:self._prefix_len] if aid else "_no_aid"
+        key = aid[:self._prefix_len] if aid else _NO_AID_KEY
         if key in self._filesets:
             return self._filesets[key]
         with self._lock:
             if key not in self._filesets:
-                sub_dir = os.path.join(self._output_dir, key)
+                sub_dir = self._aid_dir(key)
                 epoch = self._get_epoch()
                 cid_short = cid[:12] if cid else "unknown"
                 # No I/O here: the directory is created on first write, so
@@ -457,7 +508,7 @@ class AidBucketedSink(DataSink):
         for rec in records:
             aid = rec.get("aid", "")
             cid = rec.get("cid", "")
-            key = aid[:self._prefix_len] if aid else "_no_aid"
+            key = aid[:self._prefix_len] if aid else _NO_AID_KEY
             if key not in buckets:
                 buckets[key] = (cid, [])
             buckets[key][1].append(rec)
@@ -482,9 +533,9 @@ class AidBucketedSink(DataSink):
             per_aid_meta["iavm_summary"] = iavm_counts
         fileset.close(per_aid_meta)
         if compress_mode == "directory":
-            zip_directory(os.path.join(self._output_dir, key))
+            zip_directory(self._aid_dir(key))
         elif compress_mode == "individual":
-            zip_individual_files(os.path.join(self._output_dir, key))
+            zip_individual_files(self._aid_dir(key))
 
     def _finalize_all(self) -> int:
         """Finalize every AID directory in parallel.  Returns failure count.
@@ -627,10 +678,7 @@ class AidBucketedSink(DataSink):
         Retained for callers that compress independently of ``close()``;
         ``close()`` itself folds compression into its single finalize pass.
         """
-        aid_dirs = [
-            os.path.join(self._output_dir, key)
-            for key in self._filesets
-        ]
+        aid_dirs = [self._aid_dir(key) for key in self._filesets]
         if self._compressed_by_aid:
             compress_directories_parallel(aid_dirs, mode="directory")
         elif self._compressed:

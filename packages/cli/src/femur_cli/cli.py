@@ -390,13 +390,28 @@ def _print_config_summary(
             output_dir_val += " [dim](workspace default)[/dim]"
         cfg.add_row("Output dir", output_dir_val)
         if args.bucket_by_aid:
+            # Show the shard segment explicitly: it is part of the path
+            # consumers have to glob, and it is derived from the AID itself.
+            depth = args.aid_shard_depth
+            shard = "<shard>/" if depth else ""
             if args.compressed_by_aid:
-                layout = "[cyan]by AID[/cyan] [dim](by_aid/<aid>.zip, one archive per agent ID)[/dim]"
+                layout = f"[cyan]by AID[/cyan] [dim](by_aid/{shard}<aid>.zip, one archive per agent ID)[/dim]"
             elif args.compressed:
-                layout = "[cyan]by AID[/cyan] [dim](by_aid/<aid>/, files zipped individually)[/dim]"
+                layout = f"[cyan]by AID[/cyan] [dim](by_aid/{shard}<aid>/, files zipped individually)[/dim]"
             else:
-                layout = "[cyan]by AID[/cyan] [dim](by_aid/<aid>/)[/dim]"
+                layout = f"[cyan]by AID[/cyan] [dim](by_aid/{shard}<aid>/)[/dim]"
             cfg.add_row("Output layout", layout)
+            if depth:
+                cfg.add_row(
+                    "AID sharding",
+                    f"[cyan]{depth}-char prefix[/cyan] [dim](aid[:{depth}], "
+                    f"{16 ** depth} shards max)[/dim]",
+                )
+            else:
+                cfg.add_row(
+                    "AID sharding",
+                    "[yellow]off[/yellow] [dim](all AIDs in one directory)[/dim]",
+                )
         elif args.compressed:
             cfg.add_row("Compression", "[cyan]zip[/cyan] [dim](per file)[/dim]")
     cfg.add_row("Applications filter", app_filter or "[dim](all)[/dim]")
@@ -493,6 +508,7 @@ def _main_streaming(
         sink = AidBucketedSink(
             output_dir,
             output_format=output_format,
+            aid_shard_depth=args.aid_shard_depth,
             compressed=args.compressed,
             compressed_by_aid=args.compressed_by_aid,
         )
