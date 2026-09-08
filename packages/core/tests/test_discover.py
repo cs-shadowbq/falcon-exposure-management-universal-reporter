@@ -574,3 +574,84 @@ class TestBuildHostMap:
         with pytest.raises(FalconAPIError):
             build_host_map(CREDS, fql_filter="groups:['Workstations']")
         assert instance.query_combined_hosts.call_count == 1
+
+
+class TestBuildHostMapCandidates:
+    """Name-vs-ID is undocumented for Discover hosts, so both are tried.
+
+    The decisive hazard is that a wrong value form does NOT error: FQL answers
+    HTTP 200 with an empty result set, which a status check reads as success.
+    """
+
+    @patch("femur.discover.Discover")
+    def test_zero_rows_falls_through_to_the_alternate(self, MockDiscover):
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.side_effect = [
+            make_response([]),        # name form: parses, matches nothing
+            make_response(HOSTS),     # id form: works
+        ]
+        result = build_host_map(
+            CREDS,
+            fql_filter="groups:['Workstations']",
+            fql_filter_alternates=["groups:['abc123']"],
+        )
+        assert len(result) == 2
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == (
+            "aid:!''+groups:['abc123']"
+        )
+
+    @patch("femur.discover.Discover")
+    def test_rejection_falls_through_to_the_alternate(self, MockDiscover):
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.side_effect = [
+            make_response([], status_code=400),
+            make_response(HOSTS),
+        ]
+        result = build_host_map(
+            CREDS,
+            fql_filter="host.groups:['Workstations']",
+            fql_filter_alternates=["groups:['Workstations']"],
+        )
+        assert len(result) == 2
+
+    @patch("femur.discover.Discover")
+    def test_first_candidate_wins_and_stops(self, MockDiscover):
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.return_value = make_response(HOSTS)
+        build_host_map(
+            CREDS,
+            fql_filter="groups:['Workstations']",
+            fql_filter_alternates=["groups:['abc123']"],
+        )
+        assert instance.query_combined_hosts.call_count == 1
+
+    @patch("femur.discover.Discover")
+    def test_all_candidates_empty_falls_back_to_unscoped(self, MockDiscover):
+        """An empty host map would silently disable aid decoration."""
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.side_effect = [
+            make_response([]),        # name
+            make_response([]),        # id
+            make_response(HOSTS),     # unscoped
+        ]
+        result = build_host_map(
+            CREDS,
+            fql_filter="groups:['Workstations']",
+            fql_filter_alternates=["groups:['abc123']"],
+        )
+        assert len(result) == 2
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == "aid:!''"
+
+    @patch("femur.discover.Discover")
+    def test_duplicate_alternate_is_not_retried(self, MockDiscover):
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.side_effect = [
+            make_response([]),        # the one candidate
+            make_response(HOSTS),     # unscoped fallback
+        ]
+        build_host_map(
+            CREDS,
+            fql_filter="groups:['X']",
+            fql_filter_alternates=["groups:['X']"],
+        )
+        assert instance.query_combined_hosts.call_count == 2

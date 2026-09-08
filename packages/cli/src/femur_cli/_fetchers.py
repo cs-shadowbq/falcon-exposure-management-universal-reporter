@@ -228,6 +228,7 @@ async def run_concurrent_streaming(
     app_large_env: bool = False,
     decorate_aids: bool = False,
     host_map_filter: Optional[str] = None,
+    host_map_filter_alternates: Optional[List[str]] = None,
 ) -> Tuple[Any, Any, Any, Any]:
     """Like :func:`run_concurrent` but writes to *sink* instead of accumulating.
 
@@ -252,6 +253,8 @@ async def run_concurrent_streaming(
         if decorate_aids and not skip_host_map:
             host_map_dict, hm_result = await _prefetch_host_map(
                 creds, sink, reporter, task_ids, loop, pool,
+                host_map_filter=host_map_filter,
+                host_map_filter_alternates=host_map_filter_alternates,
             )
             # If the host map succeeded, inject AidDecoratorTransform.
             if host_map_dict:
@@ -313,6 +316,7 @@ async def run_concurrent_streaming(
                 on_page = reporter.make_on_page(task_id, "Host Map", unit="hosts")
                 hm = build_host_map(
                     creds, on_page=on_page, fql_filter=host_map_filter,
+                    fql_filter_alternates=host_map_filter_alternates,
                 )
                 sink.open_dataset("host_map")
                 _write_host_map(sink, hm)
@@ -384,6 +388,7 @@ async def _prefetch_host_map(
     loop: asyncio.AbstractEventLoop,
     pool: Optional[concurrent.futures.Executor] = None,
     host_map_filter: Optional[str] = None,
+    host_map_filter_alternates: Optional[List[str]] = None,
 ) -> Tuple[Dict[str, Any], Any]:
     """Fetch the host map and write it to the sink before dataset streaming.
 
@@ -398,7 +403,10 @@ async def _prefetch_host_map(
 
     def _run() -> Tuple[Dict[str, Any], int]:
         on_page = reporter.make_on_page(task_id, "Host Map", unit="hosts")
-        hm = build_host_map(creds, on_page=on_page, fql_filter=host_map_filter)
+        hm = build_host_map(
+            creds, on_page=on_page, fql_filter=host_map_filter,
+            fql_filter_alternates=host_map_filter_alternates,
+        )
         sink.open_dataset("host_map")
         _write_host_map(sink, hm)
         return hm, len(hm)
