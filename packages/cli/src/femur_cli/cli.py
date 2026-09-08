@@ -310,18 +310,16 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
     # first (matching Discover's applications endpoint), IDs as the alternate.
     # build_host_map takes the first that actually selects hosts.
     host_map_filter: Optional[str] = None
-    host_map_filter_alternates: List[str] = []
     if group_names or tags:
         app_filter = augment_filter(app_filter, "applications", group_values=group_names, tags=tags)
         vuln_filter = augment_filter(vuln_filter, "vulnerabilities", group_values=group_ids, tags=tags)
         assessment_filter = augment_filter(assessment_filter, "assessments", group_values=group_ids, tags=tags)
+        # Measured: the Discover hosts endpoint matches groups by ID. The name
+        # form returns 200 with zero rows rather than an error, so passing
+        # names here would silently yield an empty host map.
         host_map_filter = build_scope_clause(
-            "hosts", group_values=group_names, tags=tags,
+            "hosts", group_values=group_ids, tags=tags,
         ) or None
-        if group_ids:
-            by_id = build_scope_clause("hosts", group_values=group_ids, tags=tags)
-            if by_id and by_id != host_map_filter:
-                host_map_filter_alternates.append(by_id)
 
     # Parse comma-separated facet string into a list, or None if not provided.
     vuln_facet: Optional[List[str]] = (
@@ -354,7 +352,6 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
             args, creds, app_filter, vuln_filter, assessment_filter,
             vuln_facet, assessment_facet, output_format,
             host_map_filter=host_map_filter,
-            host_map_filter_alternates=host_map_filter_alternates,
         )
     else:
         _main_legacy(
@@ -488,7 +485,6 @@ def _main_streaming(
     assessment_facet: List[str],
     output_format: str,
     host_map_filter: Optional[str] = None,
-    host_map_filter_alternates: Optional[List[str]] = None,
 ) -> None:
     """Streaming path: bounded-memory fetch → sink → disk."""
     output_dir = args.output_dir or os.path.splitext(args.output)[0]
@@ -587,7 +583,6 @@ def _main_streaming(
                         app_large_env=args.app_large_env,
                         decorate_aids=decorate_aids,
                         host_map_filter=host_map_filter,
-                        host_map_filter_alternates=host_map_filter_alternates,
                     )
                 )
                 fetch_errors = collect_fetch_errors({

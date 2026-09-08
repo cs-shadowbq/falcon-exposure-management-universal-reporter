@@ -306,8 +306,14 @@ than any of them: the scope is applied to the host map too, so it reduces both t
 fetched and — under `--bucket-by-aid` — the number of output directories created.
 
 If the run is scoped but the host map still reports the whole tenant, the scope clause was
-rejected by the Discover hosts endpoint and the run fell back to an unscoped map. That
-fallback is logged as a warning; check it before assuming the host count is correct.
+rejected or matched nothing and the run fell back to an unscoped map. That fallback is
+logged as a warning; check it before assuming the host count is correct.
+
+The host map is fetched with `entity_type:'managed'`, not `aid:!''` alone. Measured on a
+GovCloud tenant, `aid:!''` matched 618,818 assets while `entity_type:'managed'` matched
+216,274 — and ANDing the two gave the same 216,274. So `aid:!''` does not restrict to
+sensor-managed hosts on this API: about 65% of what it returned had no `aid` and was
+discarded after transfer. Filtering on `entity_type` removes that waste.
 
 > **Note on partial results.** Under high concurrency the API can occasionally return
 > a transient empty body (HTTP 204) or a burst of 5xx errors. FEMUR retries these with
@@ -374,13 +380,15 @@ The output tree grows with host count, not data volume: each AID directory holds
 
 **AID directories are sharded by default.** `--aid-shard-depth` (default `2`) puts each AID under a directory named by its leading characters. AIDs are hex, so each character gives 16 shards — depth 2 gives 256, keeping any one directory to a few thousand entries even at 600K+ hosts. `--aid-shard-depth 0` restores the flat `by_aid/<aid>/` layout.
 
-| Depth | Shards | Subdirs per shard at 625K hosts | Hosts before a 64,999-subdir cap |
+| Depth | Shards | Subdirs per shard at 216K hosts | Hosts before a 64,999-subdir cap |
 |-------|--------|--------------------------------|----------------------------------|
-| `0` (flat) | — | 625,389 | 64,999 |
-| `1` | 16 | 39,086 | 1,039,984 |
-| `2` (default) | 256 | 2,442 | 16,639,744 |
+| `0` (flat) | — | 216,274 | 64,999 |
+| `1` | 16 | 13,517 | 1,039,984 |
+| `2` (default) | 256 | 845 | 16,639,744 |
 
 **Scope the run.** `--host-groups` is applied to the host map as well as to the datasets, so scoping the run also scopes the number of AID buckets. Without it the host map covers every sensor-managed host in the CID, and every one of them gets a directory — even if you only asked for one host group. A run is logged with its projected directory and file counts as the AID count crosses each 50,000 boundary.
+
+The Discover **hosts** endpoint matches host groups by group **ID**, not name — unlike the applications endpoint. The name form is not an error; it returns zero rows. FEMUR passes IDs and treats an empty scoped host map as a failure, retrying unscoped so AID decoration keeps working, but check the log if the host count looks like the whole tenant.
 
 **Check inodes, not the descriptor limit.** Descriptors are bounded regardless of host count (see [Output Formats](#output-formats)), but inode count is not — check `df -i` on the output filesystem. Sharding also sidesteps the per-directory subdirectory cap that ext3, and ext4 without the `dir_nlink` feature, impose at ~64,999 entries (`[Errno 31] Too many links`). RHEL 9 defaults to XFS, which has no such cap, and modern ext4 enables `dir_nlink`, so this is insurance rather than a limit most deployments would meet.
 
