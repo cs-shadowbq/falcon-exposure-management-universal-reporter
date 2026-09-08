@@ -923,7 +923,11 @@ class TestPartialManifest:
                 side_effect=FalconAPIError("query_combined_assessments", 204, []),
             ),
         ):
-            main(["--output-format", "jsonl", "--skip-host-map", "--output-dir", out_dir])
+            # A failed dataset now exits non-zero: the output is incomplete,
+            # and previously this reported success.
+            with pytest.raises(SystemExit) as excinfo:
+                main(["--output-format", "jsonl", "--skip-host-map", "--output-dir", out_dir])
+            assert excinfo.value.code == 1
 
         with open(tmp_path / "inv" / "manifest.json") as fh:
             manifest = json.load(fh)
@@ -1107,3 +1111,69 @@ class TestParserGrouping:
         assert args.assessment_compliance_mapping is False
         assert args.compressed is True
 
+
+
+# ---------------------------------------------------------------------------
+# Host map write chunking
+#
+# The whole map used to be handed to the sink in a single write_batch, which
+# duplicated it as a list of dicts and built a per-AID grouping dict of the
+# same cardinality inside the sink — hundreds of MB at 600K+ hosts.
+# ---------------------------------------------------------------------------
+
+
+class TestHostMapWriteChunking:
+    class _RecordingSink:
+        def __init__(self):
+            self.batches = []
+
+        def write_batch(self, dataset_name, records):
+            self.batches.append((dataset_name, list(records)))
+
+    def test_splits_into_bounded_chunks(self):
+        from femur_cli._fetchers import _write_host_map
+        from femur_cli.constants import HOST_MAP_WRITE_CHUNK
+
+        n = HOST_MAP_WRITE_CHUNK * 2 + 7
+        host_map = {f"h{i}": {"cid": "c1", "aid": f"aid{i:07d}"} for i in range(n)}
+        sink = self._RecordingSink()
+        _write_host_map(sink, host_map)
+
+        assert len(sink.batches) == 3
+        assert [len(b) for _, b in sink.batches] == [
+            HOST_MAP_WRITE_CHUNK, HOST_MAP_WRITE_CHUNK, 7,
+        ]
+        assert all(name == "host_map" for name, _ in sink.batches)
+
+    def test_writes_every_record_with_its_host_id(self):
+        from femur_cli._fetchers import _write_host_map
+
+        host_map = {f"h{i}": {"cid": "c1", "aid": f"aid{i}"} for i in range(10)}
+        sink = self._RecordingSink()
+        _write_host_map(sink, host_map)
+
+        written = [rec for _, batch in sink.batches for rec in batch]
+        assert len(written) == 10
+        assert {r["_host_map_id"] for r in written} == set(host_map)
+        assert all(r["cid"] == "c1" for r in written)
+
+    def test_each_chunk_is_sorted_by_aid(self):
+        """Sorting lets the sink's per-AID grouping coalesce writes."""
+        from femur_cli._fetchers import _write_host_map
+
+        host_map = {
+            "h1": {"cid": "c1", "aid": "zzz"},
+            "h2": {"cid": "c1", "aid": "aaa"},
+            "h3": {"cid": "c1", "aid": "mmm"},
+        }
+        sink = self._RecordingSink()
+        _write_host_map(sink, host_map)
+        aids = [r["aid"] for _, batch in sink.batches for r in batch]
+        assert aids == sorted(aids)
+
+    def test_empty_map_writes_nothing(self):
+        from femur_cli._fetchers import _write_host_map
+
+        sink = self._RecordingSink()
+        _write_host_map(sink, {})
+        assert sink.batches == []

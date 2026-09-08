@@ -85,7 +85,13 @@ class TestBuildScopeClause:
             "applications",
             "vulnerabilities",
             "assessments",
+            "hosts",
         }
+
+    def test_hosts_uses_unprefixed_fields(self):
+        """Discover's hosts endpoint has the host as the top-level entity."""
+        clause = build_scope_clause("hosts", group_values=["Workstations"])
+        assert clause == "groups:['Workstations']"
 
 
 # ---------------------------------------------------------------------------

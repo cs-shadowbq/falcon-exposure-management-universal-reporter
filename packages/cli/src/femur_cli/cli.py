@@ -38,6 +38,7 @@ from rich.traceback import Traceback
 from femur import (
     assemble_inventory_payload,
     augment_filter,
+    build_scope_clause,
     collect_fetch_errors,
     decorate_applications_with_aid,
     detect_workspace,
@@ -45,6 +46,7 @@ from femur import (
     resolve_group_names_to_ids,
     strip_compliance_mappings,
 )
+from femur_pipeline.fdbudget import format_fd_state, raise_soft_limit
 from femur_pipeline.pipeline import ChainedTransform
 from femur_pipeline.sinks import create_sink
 from femur.configuration import ASSESSMENT_BASE_FACETS, DEFAULT_ASSESSMENT_FILTER
@@ -187,6 +189,12 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
 
     _expand_large_env(args)
 
+    # Take whatever descriptor headroom the hard limit allows.  This is not a
+    # substitute for bounding descriptor use — the hard limit is itself capped
+    # by fs.nr_open / kern.maxfilesperproc — but the output sinks and the
+    # concurrent HTTPS pools share this budget, so free headroom is worth it.
+    raise_soft_limit()
+
     # ------------------------------------------------------------------
     # Workspace-aware defaults
     # ------------------------------------------------------------------
@@ -292,10 +300,18 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
         # Preserve the user's ordering when building the ID list.
         group_ids = [resolved[name] for name in group_names]
 
+    # Scope the host map the same way as the datasets.  Without this the map
+    # covers every sensor-managed host in the CID, so a run scoped to one host
+    # group still fetched — and under --bucket-by-aid created a directory for —
+    # every host in the tenant.  Discover matches groups by name.
+    host_map_filter: Optional[str] = None
     if group_names or tags:
         app_filter = augment_filter(app_filter, "applications", group_values=group_names, tags=tags)
         vuln_filter = augment_filter(vuln_filter, "vulnerabilities", group_values=group_ids, tags=tags)
         assessment_filter = augment_filter(assessment_filter, "assessments", group_values=group_ids, tags=tags)
+        host_map_filter = build_scope_clause(
+            "hosts", group_values=group_names, tags=tags,
+        ) or None
 
     # Parse comma-separated facet string into a list, or None if not provided.
     vuln_facet: Optional[List[str]] = (
@@ -327,6 +343,7 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
         _main_streaming(
             args, creds, app_filter, vuln_filter, assessment_filter,
             vuln_facet, assessment_facet, output_format,
+            host_map_filter=host_map_filter,
         )
     else:
         _main_legacy(
@@ -411,6 +428,11 @@ def _print_config_summary(
         cfg.add_row("Vulnerabilities facets", f"[dim]{', '.join(vuln_facet)}[/dim]")
     if args.skip_host_map:
         cfg.add_row("Host map", "[yellow]skipped[/yellow]")
+    # Descriptor budget: worth surfacing because --bucket-by-aid output and the
+    # concurrent HTTPS pools draw on the same limit, and the limit in force
+    # inside a container is not necessarily the one `ulimit -n` reports.
+    if args.bucket_by_aid:
+        cfg.add_row("File descriptors", f"[dim]{format_fd_state()}[/dim]")
     if args.verbose:
         cfg.add_row("Verbose", "[yellow]on[/yellow]")
     if args.trace_http:
@@ -439,6 +461,7 @@ def _main_streaming(
     vuln_facet: Optional[List[str]],
     assessment_facet: List[str],
     output_format: str,
+    host_map_filter: Optional[str] = None,
 ) -> None:
     """Streaming path: bounded-memory fetch → sink → disk."""
     output_dir = args.output_dir or os.path.splitext(args.output)[0]
@@ -475,6 +498,14 @@ def _main_streaming(
         )
     else:
         sink = create_sink(output_format, output_dir)
+
+    # Defined before the fetch so the summary below cannot NameError on a
+    # failure path that leaves the try block early.
+    apps_r: Any = 0
+    vulns_r: Any = 0
+    asmts_r: Any = 0
+    hm_r: Any = 0
+    fetch_errors: List[dict] = []
 
     with Progress(
         SpinnerColumn(),
@@ -527,6 +558,7 @@ def _main_streaming(
                         assessment_large_env=args.assessment_large_env,
                         app_large_env=args.app_large_env,
                         decorate_aids=decorate_aids,
+                        host_map_filter=host_map_filter,
                     )
                 )
                 fetch_errors = collect_fetch_errors({
@@ -584,6 +616,18 @@ def _main_streaming(
         console.print()
     console.print(f"[green]✓[/green] Written to [bold]{output_dir!r}[/bold] ({output_format})")
     console.print()
+
+    # A failed dataset means the output is incomplete, so the run must not
+    # report success: automation wrapping this previously saw exit 0 even when
+    # every dataset failed.
+    if fetch_errors:
+        failed = ", ".join(sorted(e["dataset"] for e in fetch_errors))
+        console.print(
+            f"[bold red]✗[/bold red] Exiting non-zero: {len(fetch_errors)} "
+            f"dataset(s) failed ({failed})."
+        )
+        console.print()
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------

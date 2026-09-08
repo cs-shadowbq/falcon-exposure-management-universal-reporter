@@ -25,7 +25,7 @@ from femur import (
 from femur_pipeline.pipeline import ChainedTransform, stream_dataset
 from femur_pipeline.transforms import AidDecoratorTransform
 
-from .constants import MAX_CONCURRENT_FETCHES
+from .constants import HOST_MAP_WRITE_CHUNK, MAX_CONCURRENT_FETCHES
 from ._progress import ProgressReporter
 
 log = logging.getLogger("femur")
@@ -227,6 +227,7 @@ async def run_concurrent_streaming(
     assessment_large_env: bool = False,
     app_large_env: bool = False,
     decorate_aids: bool = False,
+    host_map_filter: Optional[str] = None,
 ) -> Tuple[Any, Any, Any, Any]:
     """Like :func:`run_concurrent` but writes to *sink* instead of accumulating.
 
@@ -239,21 +240,27 @@ async def run_concurrent_streaming(
     """
     loop = asyncio.get_running_loop()
 
-    # -- Host-map-first pre-step (when aid decoration is requested) ----------
-    hm_result: Any = 0  # default when skipped or not decorated
-    if decorate_aids and not skip_host_map:
-        host_map_dict, hm_result = await _prefetch_host_map(
-            creds, sink, reporter, task_ids, loop,
-        )
-        # If the host map succeeded, inject AidDecoratorTransform.
-        if host_map_dict:
-            aid_transform = AidDecoratorTransform(host_map_dict)
-            if transform is not None:
-                transform = ChainedTransform([aid_transform, transform])
-            else:
-                transform = aid_transform
+    # One pool for every blocking fetch, including the host-map pre-step.
+    # Using the default executor for the pre-step instead would leave it
+    # outside this function's shutdown path, so it would be joined by the
+    # interpreter's atexit hook — which is what made Ctrl-C hang.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FETCHES)
+    interrupted = False
+    try:
+        # -- Host-map-first pre-step (when aid decoration is requested) ------
+        hm_result: Any = 0  # default when skipped or not decorated
+        if decorate_aids and not skip_host_map:
+            host_map_dict, hm_result = await _prefetch_host_map(
+                creds, sink, reporter, task_ids, loop, pool,
+            )
+            # If the host map succeeded, inject AidDecoratorTransform.
+            if host_map_dict:
+                aid_transform = AidDecoratorTransform(host_map_dict)
+                if transform is not None:
+                    transform = ChainedTransform([aid_transform, transform])
+                else:
+                    transform = aid_transform
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FETCHES) as pool:
         async def _stream(iter_fn: Any, dataset_name: str, task_key: str,
                           label: str, make_extra_fn_kwargs=None) -> Any:
             task_id = task_ids[task_key]
@@ -304,11 +311,11 @@ async def run_concurrent_streaming(
 
             def _run() -> int:
                 on_page = reporter.make_on_page(task_id, "Host Map", unit="hosts")
-                hm = build_host_map(creds, on_page=on_page)
+                hm = build_host_map(
+                    creds, on_page=on_page, fql_filter=host_map_filter,
+                )
                 sink.open_dataset("host_map")
-                batch = [{"_host_map_id": k, **v} for k, v in hm.items()]
-                if batch:
-                    sink.write_batch("host_map", batch)
+                _write_host_map(sink, hm)
                 return len(hm)
 
             try:
@@ -332,8 +339,41 @@ async def run_concurrent_streaming(
         results = await asyncio.gather(
             apps_coro, vuln_coro, asmt_coro, hm_coro,
         )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        interrupted = True
+        raise
+    finally:
+        # On interrupt, do not wait: worker threads may be sleeping in
+        # pagination back-off for up to a minute each, and joining them is
+        # what makes Ctrl-C appear to do nothing.
+        pool.shutdown(wait=not interrupted, cancel_futures=True)
 
     return results[0], results[1], results[2], results[3]
+
+
+def _write_host_map(sink: Any, host_map: Dict[str, Any]) -> None:
+    """Write a host map to *sink* in bounded chunks.
+
+    Handing the whole map over in one call materialised a second full copy as
+    a list of dicts, plus a per-AID grouping dict inside the sink — hundreds of
+    MB at 600K+ hosts.  Chunking also lets the sink's own progress and fan-out
+    warnings appear during the write instead of only after it.
+
+    Each chunk is sorted by ``aid`` so the sink's per-AID grouping coalesces
+    consecutive records for the same host into a single write.
+    """
+    if not host_map:
+        return
+    chunk: List[dict] = []
+    for host_id, entry in host_map.items():
+        chunk.append({"_host_map_id": host_id, **entry})
+        if len(chunk) >= HOST_MAP_WRITE_CHUNK:
+            chunk.sort(key=lambda rec: rec.get("aid") or "")
+            sink.write_batch("host_map", chunk)
+            chunk = []
+    if chunk:
+        chunk.sort(key=lambda rec: rec.get("aid") or "")
+        sink.write_batch("host_map", chunk)
 
 
 async def _prefetch_host_map(
@@ -342,6 +382,8 @@ async def _prefetch_host_map(
     reporter: ProgressReporter,
     task_ids: Dict[str, Any],
     loop: asyncio.AbstractEventLoop,
+    pool: Optional[concurrent.futures.Executor] = None,
+    host_map_filter: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Any]:
     """Fetch the host map and write it to the sink before dataset streaming.
 
@@ -353,19 +395,16 @@ async def _prefetch_host_map(
     """
     task_id = task_ids["hosts"]
     log.info("Pre-fetching host map for aid decoration")
-    result_map: Dict[str, Any] = {}
 
     def _run() -> Tuple[Dict[str, Any], int]:
         on_page = reporter.make_on_page(task_id, "Host Map", unit="hosts")
-        hm = build_host_map(creds, on_page=on_page)
+        hm = build_host_map(creds, on_page=on_page, fql_filter=host_map_filter)
         sink.open_dataset("host_map")
-        batch = [{"_host_map_id": k, **v} for k, v in hm.items()]
-        if batch:
-            sink.write_batch("host_map", batch)
+        _write_host_map(sink, hm)
         return hm, len(hm)
 
     try:
-        hm, count = await loop.run_in_executor(None, _run)
+        hm, count = await loop.run_in_executor(pool, _run)
         log.info("Pre-fetched host map: %d entries", count)
         reporter.mark_success(task_id, "Host Map", count, unit="entries")
         return hm, count

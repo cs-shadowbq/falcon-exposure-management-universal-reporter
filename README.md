@@ -298,12 +298,32 @@ femur -e crowdstrike.env \
     --decorate-aids
 ```
 
+### Scope before you scale
+
+Every strategy above raises thread counts, and each bucket thread holds its own
+connection pool. Narrowing the run with `--host-groups` or `--tags` is usually worth more
+than any of them: the scope is applied to the host map too, so it reduces both the volume
+fetched and — under `--bucket-by-aid` — the number of output directories created.
+
+If the run is scoped but the host map still reports the whole tenant, the scope clause was
+rejected by the Discover hosts endpoint and the run fell back to an unscoped map. That
+fallback is logged as a warning; check it before assuming the host count is correct.
+
 > **Note on partial results.** Under high concurrency the API can occasionally return
 > a transient empty body (HTTP 204) or a burst of 5xx errors. FEMUR retries these with
 > exponential back-off. If a streaming dataset still fails after retries, any records
 > already written for it are **partial** — the run records the affected datasets under
 > the `partial` and `errors` keys in `manifest.json`. Treat a partial dataset's count
 > as a lower bound and re-run to obtain a complete dataset.
+>
+> **Exit code.** A run whose output is incomplete exits **1**, naming the failed
+> datasets, so automation does not mistake a partial export for a good one. Only a run
+> in which every dataset succeeded exits 0.
+>
+> **Not every 5xx is the server.** When the process runs out of file descriptors, no new
+> sockets can be opened and the HTTP client reports what looks like an HTTP 500. FEMUR
+> detects this, refuses to retry it (retrying cannot help — the limit is local), and says
+> so explicitly rather than blaming the API.
 
 ## Output Formats
 
@@ -314,6 +334,8 @@ femur -e crowdstrike.env \
 | XML | `--output-format xml` | Per-dataset `.xml` | Bounded | SOAP/enterprise ingestors |
 
 All output formats produce identical data structures. Schema definitions for validation and documentation are in [docs/schemas/](docs/schemas/) — JSON Schema (draft-07) for JSONL and XSD with URN-based `targetNamespace` identifiers for XML.
+
+Open file descriptors are also bounded, in every format including `--bucket-by-aid`: output files are appended to and closed per write rather than held open, so descriptor use scales with the number of fetch threads, not the number of hosts.
 
 ### Per-Host Bucketed Output
 
@@ -340,6 +362,14 @@ inventory/by_aid/
 Each per-AID manifest includes record counts, provenance (app name, version, CLI command), and IAVM severity breakdown when `--iavm-file` is used. The aggregate `manifest.json` summarizes totals across all hosts.
 
 This flag implies `--decorate-aids` (applications need the `aid` field populated from the host map). Supports multi-CID (Flight Control) environments — each AID's CID is captured from its records.
+
+#### Scale: one directory per host
+
+The output tree grows with host count, not data volume: each AID directory holds up to five small files, so 100K hosts is ~500K files and ~100K directories. Two things follow.
+
+**Scope the run.** `--host-groups` is applied to the host map as well as to the datasets, so scoping the run also scopes the number of AID buckets. Without it the host map covers every sensor-managed host in the CID, and every one of them gets a directory — even if you only asked for one host group. A run is logged with its projected directory and file counts as the AID count crosses each 50,000 boundary.
+
+**Watch the filesystem, not the descriptor limit.** Descriptors are bounded regardless of host count (see [Output Formats](#output-formats)), but inode count and directory-entry limits are not. On ext3, and on ext4 without the `dir_nlink` feature, a directory caps at ~64,999 subdirectories and further writes fail with `[Errno 31] Too many links` — a filesystem limit, not a tool limit. Consider `--compressed-by-aid` to collapse each host into a single archive.
 
 ### Compression
 

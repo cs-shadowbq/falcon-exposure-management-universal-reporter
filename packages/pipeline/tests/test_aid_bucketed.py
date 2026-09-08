@@ -4,8 +4,14 @@ import json
 import os
 import threading
 import zipfile
+from pathlib import Path
+
+import pytest
 
 from femur_pipeline.sinks.aid_bucketed import AidBucketedSink
+
+# Repo-root-relative schema directory (packages/pipeline/tests -> repo root).
+_SCHEMA_DIR = Path(__file__).resolve().parents[3] / "docs" / "schemas"
 
 
 def _read_jsonl(path):
@@ -471,3 +477,231 @@ class TestAidBucketedSinkCompressedByAid:
         sink.close()
 
         assert (tmp_path / "by_aid" / "manifest.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# File descriptor budget
+#
+# A production run with --bucket-by-aid over 625,389 unique AIDs exhausted the
+# 65,536 fd soft limit at bucket 65,531, because every (AID, dataset) pair held
+# an open handle until close().  These tests pin the bounded-handle contract.
+# ---------------------------------------------------------------------------
+
+
+resource = pytest.importorskip("resource")
+
+
+class TestAidBucketedSinkFileDescriptors:
+    def test_survives_low_fd_limit(self, tmp_path):
+        """Writing many AIDs must not scale open descriptors with AID count."""
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if hard != resource.RLIM_INFINITY and hard < 128:
+            pytest.skip("hard fd limit too low to exercise this path")
+
+        resource.setrlimit(resource.RLIMIT_NOFILE, (128, hard))
+        try:
+            sink = AidBucketedSink(str(tmp_path))
+            sink.set_metadata("generated_at", "2026-06-09T00:00:00+00:00")
+            sink.write_batch(
+                "host_map",
+                [
+                    {"_host_map_id": f"h{i}", "aid": f"aid{i:06d}", "cid": "c1"}
+                    for i in range(2000)
+                ],
+            )
+            sink.close()
+        finally:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+        by_aid = tmp_path / "by_aid"
+        assert len([p for p in by_aid.iterdir() if p.is_dir()]) == 2000
+        manifest = json.loads((by_aid / "manifest.json").read_text())
+        assert manifest["total_aids"] == 2000
+
+    def test_one_append_per_file_for_single_batch(self, tmp_path, monkeypatch):
+        """A single batch must cost exactly one write per (AID, dataset) file."""
+        from femur_pipeline.sinks import aid_bucketed
+
+        calls = []
+        real = aid_bucketed._append_bytes
+
+        def _spy(path, payload, truncate=False):
+            calls.append(path)
+            return real(path, payload, truncate=truncate)
+
+        monkeypatch.setattr(aid_bucketed, "_append_bytes", _spy)
+
+        sink = AidBucketedSink(str(tmp_path))
+        sink.set_metadata("generated_at", "2026-06-09T00:00:00+00:00")
+        sink.write_batch(
+            "host_map",
+            [
+                {"_host_map_id": f"h{i}", "aid": f"aid{i:04d}", "cid": "c1"}
+                for i in range(500)
+            ],
+        )
+
+        assert len(calls) == 500
+        assert len(set(calls)) == 500
+        sink.close()
+
+
+# ---------------------------------------------------------------------------
+# Append semantics
+#
+# Switching from a held-open "wb" handle to per-write O_APPEND must not
+# truncate.  These are the primary regression risk of that change.
+# ---------------------------------------------------------------------------
+
+
+class TestAidBucketedSinkAppendSemantics:
+    def test_repeated_batches_append_not_truncate(self, tmp_path):
+        sink = AidBucketedSink(str(tmp_path))
+        sink.set_metadata("generated_at", "2026-06-09T00:00:00+00:00")
+        for b in range(10):
+            sink.write_batch(
+                "vulnerabilities",
+                [{"aid": "aaa", "cid": "c1", "cve": f"CVE-{b}-{i}"} for i in range(5)],
+            )
+        sink.close()
+
+        d = str(tmp_path / "by_aid" / "aaa")
+        assert len(_read_jsonl(_find_jsonl(d, "vulnerabilities--"))) == 50
+        with open(_find_json(d, "manifest--")) as fh:
+            assert json.load(fh)["counts"]["vulnerabilities"] == 50
+
+    def test_interleaved_datasets_same_aid_do_not_clobber(self, tmp_path):
+        """Creating dataset B's file must not truncate dataset A's."""
+        sink = AidBucketedSink(str(tmp_path))
+        sink.set_metadata("generated_at", "2026-06-09T00:00:00+00:00")
+        for i in range(5):
+            sink.write_record("applications", {"aid": "aaa", "cid": "c1", "n": i})
+            sink.write_record("vulnerabilities", {"aid": "aaa", "cid": "c1", "n": i})
+            sink.write_record("assessments", {"aid": "aaa", "cid": "c1", "n": i})
+        sink.close()
+
+        d = str(tmp_path / "by_aid" / "aaa")
+        for ds in ("applications", "vulnerabilities", "assessments"):
+            assert len(_read_jsonl(_find_jsonl(d, ds + "--"))) == 5
+
+    def test_concurrent_writes_same_aid(self, tmp_path):
+        """Four datasets hammering one AID: one dir, no lost records."""
+        sink = AidBucketedSink(str(tmp_path))
+        sink.set_metadata("generated_at", "2026-06-09T00:00:00+00:00")
+
+        def _write(dataset_name):
+            for i in range(200):
+                sink.write_batch(dataset_name, [{"aid": "aaa", "cid": "c1", "i": i}])
+
+        datasets = ("applications", "vulnerabilities", "assessments", "host_map")
+        threads = [threading.Thread(target=_write, args=(d,)) for d in datasets]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        sink.close()
+
+        d = str(tmp_path / "by_aid" / "aaa")
+        with open(_find_json(d, "manifest--")) as fh:
+            counts = json.load(fh)["counts"]
+        for ds in datasets:
+            assert counts[ds] == 200
+            assert len(_read_jsonl(_find_jsonl(d, ds + "--"))) == 200
+
+
+# ---------------------------------------------------------------------------
+# Finalization robustness
+# ---------------------------------------------------------------------------
+
+
+class TestAidBucketedSinkFinalization:
+    def test_one_bad_fileset_does_not_lose_aggregate(self, tmp_path, monkeypatch):
+        """A single per-AID failure must not abort the whole close()."""
+        sink = AidBucketedSink(str(tmp_path))
+        sink.set_metadata("generated_at", "2026-06-09T00:00:00+00:00")
+        for aid in ("aaa", "bbb", "ccc"):
+            sink.write_record("vulnerabilities", {"aid": aid, "cid": "c1", "cve": "CVE-1"})
+
+        fileset_cls = type(sink._filesets["bbb"])
+        real_close = fileset_cls.close
+
+        def _boom(self, metadata):
+            if self._aid == "bbb":
+                raise OSError("disk full")
+            return real_close(self, metadata)
+
+        monkeypatch.setattr(fileset_cls, "close", _boom)
+        sink.close()
+
+        by_aid = tmp_path / "by_aid"
+        assert (by_aid / "manifest.json").exists()
+        assert _find_json(str(by_aid / "ccc"), "manifest--") is not None
+
+
+# ---------------------------------------------------------------------------
+# XML output
+#
+# Characterization tests: this sink's XML path had no coverage at all, and the
+# bounded-handle change replaces lxml's xmlfile streaming with manual framing.
+# Output must stay byte-for-byte identical and schema-valid.
+# ---------------------------------------------------------------------------
+
+
+lxml_etree = pytest.importorskip("lxml.etree")
+
+
+class TestAidBucketedSinkXml:
+    _NS = "urn:femur:schema:host_map:1.0.0"
+
+    def _write(self, tmp_path, n_batches=3):
+        sink = AidBucketedSink(str(tmp_path), output_format="xml")
+        sink.set_metadata("generated_at", "2026-06-09T00:00:00+00:00")
+        for b in range(n_batches):
+            sink.write_batch(
+                "host_map",
+                [
+                    {"_host_map_id": f"h{b}{i}", "cid": "c1", "aid": "aaa"}
+                    for i in range(2)
+                ],
+            )
+        sink.close()
+        d = tmp_path / "by_aid" / "aaa"
+        return next(p for p in d.iterdir() if p.name.startswith("host_map--"))
+
+    def test_single_prologue_and_root_across_batches(self, tmp_path):
+        data = self._write(tmp_path).read_bytes()
+        assert data.count(b"<?xml") == 1
+        assert data.count(b"<host_map") == 1
+        assert data.endswith(b"</host_map>")
+
+    def test_no_redundant_xmlns_on_records(self, tmp_path):
+        """lxml stamps xmlns on every child if a record is appended to a ns'd root."""
+        assert self._write(tmp_path).read_bytes().count(b"xmlns=") == 1
+
+    def test_record_count_and_wellformed(self, tmp_path):
+        root = lxml_etree.parse(str(self._write(tmp_path))).getroot()
+        assert root.tag == f"{{{self._NS}}}host_map"
+        assert len(root.findall(f"{{{self._NS}}}record")) == 6
+
+    @pytest.mark.skipif(not _SCHEMA_DIR.is_dir(), reason="schemas not in this install")
+    def test_validates_against_xsd(self, tmp_path):
+        xsd = lxml_etree.XMLSchema(
+            lxml_etree.parse(str(_SCHEMA_DIR / "host_map.xsd"))
+        )
+        doc = lxml_etree.parse(str(self._write(tmp_path)))
+        assert xsd.validate(doc), xsd.error_log
+
+    @pytest.mark.skipif(not _SCHEMA_DIR.is_dir(), reason="schemas not in this install")
+    def test_manifests_validate_against_xsd(self, tmp_path):
+        self._write(tmp_path)
+        by_aid = tmp_path / "by_aid"
+        per_aid = next(
+            p for p in (by_aid / "aaa").iterdir() if p.name.startswith("manifest--")
+        )
+        for xsd_name, doc_path in (
+            ("manifest-by-aid.xsd", per_aid),
+            ("manifest-aggregate.xsd", by_aid / "manifest.xml"),
+        ):
+            xsd = lxml_etree.XMLSchema(lxml_etree.parse(str(_SCHEMA_DIR / xsd_name)))
+            doc = lxml_etree.parse(str(doc_path))
+            assert xsd.validate(doc), f"{xsd_name}: {xsd.error_log}"

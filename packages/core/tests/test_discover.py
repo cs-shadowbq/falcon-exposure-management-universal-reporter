@@ -9,6 +9,7 @@ from femur.discover import (
     iter_applications_mac_buckets,
     iter_applications_parallel_offset,
     iter_hosts,
+    build_host_map,
 )
 
 CREDS = {"client_id": "test", "client_secret": "test", "base_url": "US1"}
@@ -495,3 +496,81 @@ class TestIterApplicationsMacBuckets:
         # Discover is constructed once for the probe phase (+ once per Phase 1
         # bucket chain, but with total=0 there are no chains).
         assert MockDiscover.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# build_host_map — scoping
+#
+# Without a scope filter the map covers every sensor-managed host in the CID.
+# For a run scoped to one host group that meant fetching hundreds of thousands
+# of irrelevant hosts, and under --bucket-by-aid creating a directory for each.
+# ---------------------------------------------------------------------------
+
+
+HOSTS = [
+    {"id": "h1", "aid": "aid1", "cid": "c1"},
+    {"id": "h2", "aid": "aid2", "cid": "c1"},
+]
+
+
+class TestBuildHostMap:
+    @patch("femur.discover.Discover")
+    def test_maps_host_id_to_cid_and_aid(self, MockDiscover):
+        MockDiscover.return_value.query_combined_hosts.return_value = make_response(HOSTS)
+        assert build_host_map(CREDS) == {
+            "h1": {"cid": "c1", "aid": "aid1"},
+            "h2": {"cid": "c1", "aid": "aid2"},
+        }
+
+    @patch("femur.discover.Discover")
+    def test_unscoped_filter_is_aid_only(self, MockDiscover):
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.return_value = make_response(HOSTS)
+        build_host_map(CREDS)
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == "aid:!''"
+
+    @patch("femur.discover.Discover")
+    def test_scope_filter_is_anded_with_aid_filter(self, MockDiscover):
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.return_value = make_response(HOSTS)
+        build_host_map(CREDS, fql_filter="groups:['Workstations']")
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == (
+            "aid:!''+groups:['Workstations']"
+        )
+
+    @patch("femur.discover.Discover")
+    def test_excludes_hosts_without_an_aid(self, MockDiscover):
+        MockDiscover.return_value.query_combined_hosts.return_value = make_response(
+            [{"id": "h1", "aid": "aid1", "cid": "c1"}, {"id": "h2", "cid": "c1"}]
+        )
+        assert list(build_host_map(CREDS)) == ["h1"]
+
+    @patch("femur.discover.Discover")
+    def test_rejected_scope_falls_back_to_unscoped(self, MockDiscover):
+        """An unsupported group field must not cost the whole run."""
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.side_effect = [
+            make_response([], status_code=400),
+            make_response(HOSTS),
+        ]
+        result = build_host_map(CREDS, fql_filter="groups:['Workstations']")
+        assert result == {
+            "h1": {"cid": "c1", "aid": "aid1"},
+            "h2": {"cid": "c1", "aid": "aid2"},
+        }
+        # Second attempt drops the scope clause.
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == "aid:!''"
+
+    @patch("femur.discover.Discover")
+    def test_local_exhaustion_is_not_swallowed_by_the_fallback(self, MockDiscover):
+        """Descriptor exhaustion is fatal — retrying unscoped would be worse."""
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.return_value = make_response(
+            [], status_code=500,
+        )
+        instance.query_combined_hosts.return_value["body"]["errors"] = [
+            {"code": 500, "message": "[Errno 24] Too many open files"}
+        ]
+        with pytest.raises(FalconAPIError):
+            build_host_map(CREDS, fql_filter="groups:['Workstations']")
+        assert instance.query_combined_hosts.call_count == 1

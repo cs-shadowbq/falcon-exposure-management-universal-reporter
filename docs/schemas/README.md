@@ -245,6 +245,30 @@ All XSD schemas use `xs:all` with `minOccurs="0"` for optional fields. The API m
 add new fields in the future not yet defined in these schemas. Unknown elements will
 cause validation failure — update the XSD when new fields appear in the output.
 
+Because `xs:all` is a closed content model, the manifests are **not** a place to add
+diagnostic output ad hoc: any new element makes previously-valid documents fail. Run
+diagnostics go to the log instead. `packages/pipeline/tests/test_aid_bucketed.py`
+validates emitted manifests against these XSDs, so an accidental addition fails the
+test suite rather than a customer's ingest pipeline.
+
+#### Proposed for schema 1.1.0: `aid_directories`
+
+`aid_directories` in `manifest-aggregate` is a required array holding every AID
+directory name. It scales linearly with host count — at 600K hosts that is a ~20 MB
+single-line JSON array, and building the XML form costs several hundred MB of
+transient tree. Above 10,000 AIDs the XML manifest is now streamed rather than built
+in memory, which removes the memory spike but not the file size.
+
+Three changes worth making together in a `1.1.0` schema revision:
+
+1. Make `aid_directories` optional (`minOccurs="0"` in the XSD, drop from `required`
+   in the JSON Schema).
+2. Add a streamable sidecar, `by_aid/aids.txt`, one AID per line.
+3. Add an `aid_directories_truncated` boolean for when the inline array is omitted.
+
+Until then the array stays inline and complete, because omitting it would break
+consumers validating against the published `1.0.0` schemas.
+
 ## Validation
 
 ### XML (xmllint)

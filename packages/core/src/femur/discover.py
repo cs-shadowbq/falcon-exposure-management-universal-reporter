@@ -61,7 +61,9 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 from falconpy import Discover
 
+from ._exceptions import FalconAPIError
 from ._pagination import _check_response, _paginate_after, _retrying_call
+from ._resources import is_local_exhaustion
 
 
 def iter_hosts(
@@ -575,7 +577,20 @@ def iter_applications_mac_buckets(
             )
             _check_response(resp, "query_applications")
             total = (resp.get("body") or {}).get("meta", {}).get("pagination", {}).get("total", 0)
-        except Exception:
+        except Exception as exc:
+            # Treating a failed probe as "bucket empty" silently discards every
+            # application on hosts with no MAC address.  Local resource
+            # exhaustion is fatal and must not be swallowed at all; anything
+            # else stays tolerated (the null filter is not supported
+            # everywhere) but is now loud rather than invisible.
+            if is_local_exhaustion(exc):
+                raise
+            _log.error(
+                "MAC null-bucket probe failed (%s) — applications on hosts "
+                "with no MAC address will be MISSING from this run: %s",
+                type(exc).__name__,
+                exc,
+            )
             total = 0
         return "__NULL__", total
 
@@ -654,6 +669,7 @@ def build_host_map(
     credentials: dict,
     page_size: int = 1000,
     on_page: Optional[Callable[[int, Optional[int]], None]] = None,
+    fql_filter: Optional[str] = None,
 ) -> Dict[str, Dict[str, str]]:
     """Build a lookup from Discover host ID to CID and agent ID (aid / device_id).
 
@@ -675,12 +691,22 @@ def build_host_map(
     Unmanaged / agentless assets (no Falcon sensor) have no ``aid`` and are
     excluded from the returned dict.
 
+    Scoping: pass *fql_filter* to restrict the map to a subset of hosts (for
+    example the same host groups the rest of the run is scoped to).  Without
+    it the map covers every sensor-managed host in the CID, which for a run
+    scoped to one host group means fetching — and, under ``--bucket-by-aid``,
+    creating a directory for — orders of magnitude more hosts than needed.
+    Because the correct group field varies by endpoint, an unsupported filter
+    is reported and then retried unscoped rather than failing the run.
+
     Args:
         credentials: Dict with ``client_id``, ``client_secret``, ``base_url``.
             Obtain via :func:`~femur.load_credentials`.
         page_size: Records per API page.  Capped at 1000 (the endpoint maximum).
         on_page: Optional callback invoked after each page with
             ``(n_records, total)``.  Used by the CLI for progress display.
+        fql_filter: Optional FQL scope clause, AND-ed with the ``aid`` filter.
+            Rejected filters fall back to an unscoped query.
 
     Returns:
         ``{discover_host_id: {"cid": cid, "aid": aid}}`` dict.
@@ -688,21 +714,47 @@ def build_host_map(
     Raises:
         :class:`~femur.FalconAPIError`: On API errors.
     """
+    _log = logging.getLogger("femur.discover")
     falcon = Discover(**credentials)
-    result: Dict[str, Dict[str, str]] = {}
-    for host in _paginate_after(
-        falcon.query_combined_hosts,
-        min(page_size, 1000),
-        "query_combined_hosts",
-        on_page=on_page,
-        filter="aid:!''",
-    ):
-        disc_id = host.get("id")
-        aid = host.get("aid")
-        cid = host.get("cid")
-        if disc_id and aid:
-            result[disc_id] = {"cid": cid, "aid": aid}
-    return result
+    base_filter = "aid:!''"
+    combined = f"{base_filter}+{fql_filter}" if fql_filter else base_filter
+
+    def _collect(host_filter: str) -> Dict[str, Dict[str, str]]:
+        collected: Dict[str, Dict[str, str]] = {}
+        for host in _paginate_after(
+            falcon.query_combined_hosts,
+            min(page_size, 1000),
+            "query_combined_hosts",
+            on_page=on_page,
+            filter=host_filter,
+        ):
+            disc_id = host.get("id")
+            aid = host.get("aid")
+            cid = host.get("cid")
+            if disc_id and aid:
+                collected[disc_id] = {"cid": cid, "aid": aid}
+        return collected
+
+    if not fql_filter:
+        return _collect(base_filter)
+
+    try:
+        return _collect(combined)
+    except FalconAPIError as exc:
+        # A scope clause the hosts endpoint does not accept must not cost the
+        # whole run: report it and fall back to the unscoped map, which is the
+        # behaviour callers had before scoping existed.
+        if is_local_exhaustion(exc):
+            raise
+        _log.warning(
+            "Host map scope filter %r was rejected (%s) — falling back to an "
+            "unscoped host map. Every sensor-managed host in the CID will be "
+            "included, which under --bucket-by-aid means one output directory "
+            "per host.",
+            fql_filter,
+            exc,
+        )
+        return _collect(base_filter)
 
 
 def decorate_applications_with_aid(

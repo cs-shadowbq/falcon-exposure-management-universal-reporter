@@ -5,6 +5,21 @@ FEMUR ships two console binaries:
 - **`femur`** — the CLI that downloads Falcon application inventory, vulnerabilities, and configuration assessments.
 - **`femurd`** — the REST API server that serves the data `femur` produces.
 
+## System limits for large environments
+
+`femur` bounds its own open file descriptors, so no particular `ulimit -n` is required.
+Two limits are still worth checking before a large run:
+
+- **Open files.** The limit that applies is the one in force *inside* the process, which in
+  a container is set by the container runtime and is often not what `ulimit -n` reports in
+  your shell. `femur` raises its soft limit to the hard limit at startup and prints both in
+  the run banner when `--bucket-by-aid` is used.
+- **Inodes and directory entries.** `--bucket-by-aid` writes one directory per host and up
+  to five small files in each, so 100K hosts is ~500K files. Check `df -i` on the output
+  filesystem. On ext3, and on ext4 without the `dir_nlink` feature, a single directory caps
+  at ~64,999 subdirectories and further writes fail with `[Errno 31] Too many links`; run
+  `tune2fs -l <device> | grep features` to confirm `dir_nlink` is present.
+
 ## Standard Install (from GitHub Release)
 
 Download wheels from the latest

@@ -10,7 +10,6 @@ Install ``lxml``::
 """
 
 import os
-import re
 import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -18,44 +17,7 @@ from typing import Any, Dict, List
 from lxml.etree import Element, QName, xmlfile
 
 from ..pipeline import DataSink
-
-# URN namespace mapping for FEMUR XML schema identity.
-# Each dataset root element declares its namespace via xmlns.
-_SCHEMA_VERSION = "1.0.0"
-_NAMESPACE_BASE = "urn:femur:schema"
-_DATASET_NAMESPACES: Dict[str, str] = {
-    "host_map": f"{_NAMESPACE_BASE}:host_map:{_SCHEMA_VERSION}",
-    "applications": f"{_NAMESPACE_BASE}:applications:{_SCHEMA_VERSION}",
-    "vulnerabilities": f"{_NAMESPACE_BASE}:vulnerabilities:{_SCHEMA_VERSION}",
-    "assessments": f"{_NAMESPACE_BASE}:assessments:{_SCHEMA_VERSION}",
-    "manifest": f"{_NAMESPACE_BASE}:manifest:{_SCHEMA_VERSION}",
-}
-
-_ILLEGAL_XML_CHARS = re.compile(
-    "[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x84\x86-\x9f]"
-)
-
-
-def _dict_to_element(tag: str, data: Any) -> Element:
-    """Recursively convert a Python value to an XML :class:`Element` tree."""
-    # Sanitise tag: XML names cannot start with a digit or contain spaces.
-    safe_tag = tag.replace(" ", "_")
-    if safe_tag and safe_tag[0].isdigit():
-        safe_tag = "_" + safe_tag
-
-    el = Element(safe_tag)
-    if isinstance(data, dict):
-        for key, val in data.items():
-            el.append(_dict_to_element(str(key), val))
-    elif isinstance(data, (list, tuple)):
-        for item in data:
-            el.append(_dict_to_element("item", item))
-    elif isinstance(data, bool):
-        el.text = "true" if data else "false"
-    elif data is not None:
-        el.text = _ILLEGAL_XML_CHARS.sub("", str(data))
-    return el
-
+from ._xml_common import _DATASET_NAMESPACES, dict_to_element as _dict_to_element
 
 class XmlSink(DataSink):
     """Write each dataset to a streaming XML file.

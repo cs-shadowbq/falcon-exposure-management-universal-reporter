@@ -39,6 +39,12 @@ DATASET_SCOPE_FIELDS = {
     "applications": {"groups": "host.groups", "tags": "host.tags", "groups_by": "name"},
     "vulnerabilities": {"groups": "host_info.groups", "tags": "host_info.tags", "groups_by": "id"},
     "assessments": {"groups": "host.groups", "tags": "host.tags", "groups_by": "id"},
+    # Discover's *hosts* endpoint (query_combined_hosts) exposes the host as the
+    # top-level entity, so its group/tag fields are unprefixed — unlike the
+    # applications endpoint, where the host is a nested projection.  Like
+    # applications, it matches groups by name.  An endpoint that rejects this
+    # clause is handled by build_host_map's unscoped fallback.
+    "hosts": {"groups": "groups", "tags": "tags", "groups_by": "name"},
 }
 
 DEFAULT_TAG_PREFIX = "FalconGroupingTags"

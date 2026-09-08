@@ -397,3 +397,61 @@ class TestNoContentHandling:
         results = list(_paginate_after(sdk_fn, 1, "op"))
         assert results == [{"id": "a"}, {"id": "b"}]
         assert sdk_fn.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Local resource exhaustion disguised as a server error
+#
+# When the process runs out of file descriptors, socket() fails with EMFILE,
+# the HTTP client reports a connection error, and falconpy surfaces it as a
+# 500.  Retrying that six times with exponential back-off — per call, per
+# thread — is how a fast local failure became a run that appeared to hang.
+# ---------------------------------------------------------------------------
+
+
+class TestLocalExhaustionNotRetried:
+    _EMFILE_BODY = (
+        "HTTPSConnectionPool(host='api.us-gov-2.crowdstrike.mil', port=443): "
+        "Max retries exceeded with url: /discover/queries/hosts/v1 "
+        "(Caused by NewConnectionError('<urllib3.connection.HTTPSConnection "
+        "object>: Failed to establish a new connection: [Errno 24] "
+        "Too many open files'))"
+    )
+
+    def _emfile_response(self):
+        return make_response(
+            [], status_code=500,
+            errors=[{"code": 500, "message": self._EMFILE_BODY}],
+        )
+
+    def test_raises_immediately_without_retrying(self):
+        sdk_fn = MagicMock(return_value=self._emfile_response())
+        with patch("femur._pagination.time.sleep") as sleep:
+            with pytest.raises(FalconAPIError) as excinfo:
+                _retrying_call(sdk_fn, {}, "query_combined_hosts")
+        assert sdk_fn.call_count == 1, "must not retry an unrecoverable local failure"
+        sleep.assert_not_called(), "must not sleep in back-off"
+        assert "too many open files" in str(excinfo.value).lower()
+
+    def test_error_message_names_the_real_cause(self):
+        sdk_fn = MagicMock(return_value=self._emfile_response())
+        with patch("femur._pagination.time.sleep"):
+            with pytest.raises(FalconAPIError) as excinfo:
+                _retrying_call(sdk_fn, {}, "query_combined_hosts")
+        message = str(excinfo.value)
+        assert "file-descriptor exhaustion" in message
+        assert "not a" in message and "server-side" in message
+
+    def test_genuine_server_500_is_still_retried(self):
+        """A real 500 must keep its retry behaviour."""
+        sdk_fn = MagicMock(
+            side_effect=[
+                make_response([], status_code=500,
+                              errors=[{"code": 500, "message": "internal error"}]),
+                make_response([{"id": "1"}]),
+            ]
+        )
+        with patch("femur._pagination.time.sleep"):
+            resp = _retrying_call(sdk_fn, {}, "op")
+        assert sdk_fn.call_count == 2
+        assert resp["status_code"] == 200
