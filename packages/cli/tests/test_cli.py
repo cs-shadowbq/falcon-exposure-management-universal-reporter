@@ -495,7 +495,14 @@ class TestScopeFilters:
             "+host_info.tags:['FalconGroupingTags/Monkey','FalconGroupingTags/heartbeat']"
         )
 
-    def test_host_groups_resolved_to_ids_for_vuln_and_assessment(self, tmp_path):
+    def test_host_groups_resolved_to_ids_for_every_dataset(self, tmp_path):
+        """Every dataset filters on the group ID, only the field name differs.
+
+        Regression: this test previously asserted the applications filter used
+        the group NAME, which is what produced 0 applications on a scoped run.
+        The name form is not rejected -- it returns 200 with zero rows -- so
+        the assertion passed and the bug shipped.
+        """
         out = str(tmp_path / "out.json")
         resolved = {"Cloud Lab": "dfba0b1b823e46409f069711d151be0c"}
         with (
@@ -513,9 +520,11 @@ class TestScopeFilters:
             main(["--output", out, "--host-groups", "Cloud Lab"])
 
         m_resolve.assert_called_once()
-        # Discover filters by NAME.
-        assert m_app.call_args[1]["fql_filter"] == "host.groups:['Cloud Lab']"
-        # Spotlight + Assessment filter by resolved ID.
+        # Discover applications: host.groups, by resolved ID.
+        assert m_app.call_args[1]["fql_filter"] == (
+            "host.groups:['dfba0b1b823e46409f069711d151be0c']"
+        )
+        # Spotlight + Assessment: different field names, same resolved ID.
         assert m_vuln.call_args[1]["fql_filter"] == (
             "status:['open','reopen']"
             "+host_info.groups:['dfba0b1b823e46409f069711d151be0c']"

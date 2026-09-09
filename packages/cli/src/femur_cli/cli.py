@@ -311,7 +311,7 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
     # build_host_map takes the first that actually selects hosts.
     host_map_filter: Optional[str] = None
     if group_names or tags:
-        app_filter = augment_filter(app_filter, "applications", group_values=group_names, tags=tags)
+        app_filter = augment_filter(app_filter, "applications", group_values=group_ids, tags=tags)
         vuln_filter = augment_filter(vuln_filter, "vulnerabilities", group_values=group_ids, tags=tags)
         assessment_filter = augment_filter(assessment_filter, "assessments", group_values=group_ids, tags=tags)
         # Measured: the Discover hosts endpoint matches groups by ID. The name

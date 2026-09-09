@@ -236,10 +236,10 @@ def resolve_group_names_to_ids(
 ) -> Tuple[Dict[str, str], List[str]]:
     """Resolve host group *names* to their group IDs.
 
-    Spotlight and Configuration Assessment queries filter on group **ID**,
-    whereas Discover filters on group **name**.  The CLI accepts group names
-    only (see ``--host-groups``); this helper looks up the corresponding IDs
-    so the same user input can drive all three datasets.
+    Every dataset filters on the group **ID** — Discover applications and
+    hosts included, despite their differing field names.  The CLI accepts group
+    names only (see ``--host-groups``); this helper resolves them once so the
+    same user input can drive all three datasets.
 
     A single ``query_combined_host_groups`` call is made with a comma-joined
     ``name:*'A',name:*'B'`` FQL OR-expression so the lookup costs one request
