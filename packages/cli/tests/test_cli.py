@@ -1177,3 +1177,55 @@ class TestHostMapWriteChunking:
         sink = self._RecordingSink()
         _write_host_map(sink, {})
         assert sink.batches == []
+
+
+# ---------------------------------------------------------------------------
+# Zero records under a scope filter
+#
+# A dataset returning 0 records is not an exception, so it never reached
+# fetch_errors and the run exited 0. A --host-groups run silently produced
+# 0 applications alongside data for the other datasets: the filter parsed and
+# matched nothing, which on this API is not an error.
+# ---------------------------------------------------------------------------
+
+
+class TestSuspectEmptyDataset:
+    def _run(self, tmp_path, args, apps=APPS):
+        out_dir = str(tmp_path / "inv")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli.cli.resolve_group_names_to_ids",
+                  return_value=({"Prod": "2a3113081ddd4c61b09730204495ab7e"}, [])),
+            patch("femur_cli._fetchers.iter_applications", return_value=apps),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=VULNS),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=ASSESSMENTS),
+        ):
+            return main(["--output-format", "jsonl", "--skip-host-map",
+                         "--output-dir", out_dir] + args)
+
+    def test_scoped_run_with_one_empty_dataset_exits_nonzero(self, tmp_path):
+        with pytest.raises(SystemExit) as excinfo:
+            self._run(tmp_path, ["--host-groups", "Prod"], apps=[])
+        assert excinfo.value.code == 1
+
+    def test_unscoped_run_with_an_empty_dataset_still_exits_zero(self, tmp_path):
+        """Without a scope filter, zero records is a legitimate answer."""
+        assert self._run(tmp_path, [], apps=[]) is None
+
+    def test_scoped_run_with_all_datasets_populated_exits_zero(self, tmp_path):
+        assert self._run(tmp_path, ["--host-groups", "Prod"]) is None
+
+    def test_scoped_run_with_every_dataset_empty_exits_zero(self, tmp_path):
+        """Nothing matched anywhere — that is a genuinely empty scope, not a
+        wrong field name, so it must not be reported as a filter bug."""
+        out_dir = str(tmp_path / "inv")
+        with (
+            patch("femur_cli.cli.load_credentials", return_value=CREDS),
+            patch("femur_cli.cli.resolve_group_names_to_ids",
+                  return_value=({"Prod": "abc"}, [])),
+            patch("femur_cli._fetchers.iter_applications", return_value=[]),
+            patch("femur_cli._fetchers.iter_vulnerabilities", return_value=[]),
+            patch("femur_cli._fetchers.iter_assessments_by_severity", return_value=[]),
+        ):
+            assert main(["--output-format", "jsonl", "--skip-host-map",
+                         "--output-dir", out_dir, "--host-groups", "Prod"]) is None
