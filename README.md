@@ -390,7 +390,9 @@ The output tree grows with host count, not data volume: each AID directory holds
 
 The Discover **hosts** endpoint matches host groups by group **ID**, not name — unlike the applications endpoint. The name form is not an error; it returns zero rows. FEMUR passes IDs and treats an empty scoped host map as a failure, retrying unscoped so AID decoration keeps working, but check the log if the host count looks like the whole tenant.
 
-**Check inodes, not the descriptor limit.** Descriptors are bounded regardless of host count (see [Output Formats](#output-formats)), but inode count is not — check `df -i` on the output filesystem. Sharding also sidesteps the per-directory subdirectory cap that ext3, and ext4 without the `dir_nlink` feature, impose at ~64,999 entries (`[Errno 31] Too many links`). RHEL 9 defaults to XFS, which has no such cap, and modern ext4 enables `dir_nlink`, so this is insurance rather than a limit most deployments would meet.
+**Check free blocks, not the descriptor limit.** Descriptors are bounded regardless of host count (see [Output Formats](#output-formats)); disk is not. Every non-empty file occupies at least one filesystem block (4 KB by default) however few bytes it holds, so at 200K hosts the ~1M small files cost **~4 GB before any data is counted**. Size by `files × block_size`, not by data volume — `df -h` and `xfs_info <dir> | grep bsize`. `--compressed-by-aid` cuts this ~5x by writing one archive per host.
+
+Sharding also sidesteps the ~64,999-subdirectory cap that ext3, and ext4 without `dir_nlink`, impose (`[Errno 31] Too many links`) — but RHEL 9 defaults to XFS, which has no such cap, so for most deployments that is insurance rather than a limit you would meet. Confirm with `df -T <output-dir>`.
 
 ### Compression
 
