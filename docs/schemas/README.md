@@ -163,13 +163,17 @@ output_dir/
 
 ```text
 output_dir/by_aid/
-    manifest.{json,xml}                                        (aggregate)
-    {aid}/
-        applications--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
-        vulnerabilities--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
-        assessments--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
-        host_map--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
-        manifest--{cid_first12}--{aid}--{epoch}.{json,xml}     (per-AID)
+    manifest.{json,xml}                                            (aggregate)
+    {shard}/                                                       (aid[:2] by default)
+        {aid}/
+            applications--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
+            vulnerabilities--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
+            assessments--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
+            host_map--{cid_first12}--{aid}--{epoch}.{jsonl,xml}
+            manifest--{cid_first12}--{aid}--{epoch}.{json,xml}      (per-AID)
+    _no_aid/                                                       (never sharded)
+        host_map--unknown--_no_aid--{epoch}.{jsonl,xml}
+        manifest--unknown--_no_aid--{epoch}.{json,xml}
 ```
 
 File naming tokens:
@@ -177,7 +181,24 @@ File naming tokens:
 - `{dataset}` — report type (applications, vulnerabilities, assessments, host_map, manifest)
 - `{cid_first12}` — first 12 characters of the CrowdStrike Customer ID
 - `{aid}` — full Falcon Agent ID
+- `{shard}` — the AID's first `--aid-shard-depth` characters (default 2), used as an
+  intermediate directory so no single directory holds every host. AIDs are lowercase hex,
+  so depth 2 yields at most 256 shards. `--aid-shard-depth 0` writes the flat
+  `by_aid/{aid}/` layout instead.
 - `{epoch}` — Unix timestamp (seconds) of the run start time
+
+**Deriving the path.** The shard is always `aid[:depth]`, so it is computable from the AID
+alone — no lookup table is needed. The aggregate manifest's `aid_directories` therefore
+lists **bare AIDs**, not shard-relative paths; join them yourself:
+
+```python
+path = f"by_aid/{aid[:2]}/{aid}"     # depth 2 (default)
+```
+
+> **Consumers reading pre-2.2 output.** Sharding changed the path depth. A glob of
+> `by_aid/*/` now matches shard directories rather than AID directories — use
+> `by_aid/*/*/` for sharded output, or run with `--aid-shard-depth 0` to keep the old
+> layout. `_no_aid` stays at the top level in both.
 
 ## Optional Enrichments
 
@@ -245,6 +266,30 @@ All XSD schemas use `xs:all` with `minOccurs="0"` for optional fields. The API m
 add new fields in the future not yet defined in these schemas. Unknown elements will
 cause validation failure — update the XSD when new fields appear in the output.
 
+Because `xs:all` is a closed content model, the manifests are **not** a place to add
+diagnostic output ad hoc: any new element makes previously-valid documents fail. Run
+diagnostics go to the log instead. `packages/pipeline/tests/test_aid_bucketed.py`
+validates emitted manifests against these XSDs, so an accidental addition fails the
+test suite rather than a customer's ingest pipeline.
+
+#### Proposed for schema 1.1.0: `aid_directories`
+
+`aid_directories` in `manifest-aggregate` is a required array holding every AID
+directory name. It scales linearly with host count — at 600K hosts that is a ~20 MB
+single-line JSON array, and building the XML form costs several hundred MB of
+transient tree. Above 10,000 AIDs the XML manifest is now streamed rather than built
+in memory, which removes the memory spike but not the file size.
+
+Three changes worth making together in a `1.1.0` schema revision:
+
+1. Make `aid_directories` optional (`minOccurs="0"` in the XSD, drop from `required`
+   in the JSON Schema).
+2. Add a streamable sidecar, `by_aid/aids.txt`, one AID per line.
+3. Add an `aid_directories_truncated` boolean for when the inline array is omitted.
+
+Until then the array stays inline and complete, because omitting it would break
+consumers validating against the published `1.0.0` schemas.
+
 ## Validation
 
 ### XML (xmllint)
@@ -254,9 +299,9 @@ cause validation failure — update the XSD when new fields appear in the output
 xmllint --schema docs/schemas/applications.xsd output/applications.xml --noout
 xmllint --schema docs/schemas/manifest.xsd output/manifest.xml --noout
 
-# Bucketed output — single AID
+# Bucketed output — single AID (shard is aid[:2] by default)
 xmllint --schema docs/schemas/vulnerabilities.xsd \
-  output/by_aid/{aid}/vulnerabilities--{cid}--{aid}--{epoch}.xml --noout
+  output/by_aid/{aid:0:2}/{aid}/vulnerabilities--{cid}--{aid}--{epoch}.xml --noout
 
 # Bucketed output — aggregate manifest
 xmllint --schema docs/schemas/manifest-aggregate.xsd output/by_aid/manifest.xml --noout

@@ -61,7 +61,22 @@ from typing import Callable, Dict, Iterator, List, Optional, Tuple
 
 from falconpy import Discover
 
+from ._exceptions import FalconAPIError
 from ._pagination import _check_response, _paginate_after, _retrying_call
+from ._resources import is_local_exhaustion
+
+# Base filters for the Discover hosts query used to build the host map.
+#
+# `aid:!''` reads as "has a sensor agent ID" but does not behave that way: on a
+# GovCloud tenant it matched 618,818 assets while entity_type:'managed' matched
+# 216,274, and ANDing the two gave the same 216,274. So most of what aid:!''
+# returns has no aid and is discarded client-side. entity_type is the clause
+# that actually selects sensor-managed hosts; aid:!'' is kept alongside it to
+# state the intent and, per that measurement, costs nothing.
+MANAGED_HOST_FILTER = "entity_type:'managed'+aid:!''"
+
+# Retained as a fallback for any tenant that does not populate entity_type.
+LEGACY_HOST_FILTER = "aid:!''"
 
 
 def iter_hosts(
@@ -575,7 +590,20 @@ def iter_applications_mac_buckets(
             )
             _check_response(resp, "query_applications")
             total = (resp.get("body") or {}).get("meta", {}).get("pagination", {}).get("total", 0)
-        except Exception:
+        except Exception as exc:
+            # Treating a failed probe as "bucket empty" silently discards every
+            # application on hosts with no MAC address.  Local resource
+            # exhaustion is fatal and must not be swallowed at all; anything
+            # else stays tolerated (the null filter is not supported
+            # everywhere) but is now loud rather than invisible.
+            if is_local_exhaustion(exc):
+                raise
+            _log.error(
+                "MAC null-bucket probe failed (%s) — applications on hosts "
+                "with no MAC address will be MISSING from this run: %s",
+                type(exc).__name__,
+                exc,
+            )
             total = 0
         return "__NULL__", total
 
@@ -654,6 +682,7 @@ def build_host_map(
     credentials: dict,
     page_size: int = 1000,
     on_page: Optional[Callable[[int, Optional[int]], None]] = None,
+    fql_filter: Optional[str] = None,
 ) -> Dict[str, Dict[str, str]]:
     """Build a lookup from Discover host ID to CID and agent ID (aid / device_id).
 
@@ -675,12 +704,32 @@ def build_host_map(
     Unmanaged / agentless assets (no Falcon sensor) have no ``aid`` and are
     excluded from the returned dict.
 
+    Why the filter names ``entity_type`` as well as ``aid``: measured on a
+    GovCloud tenant, ``aid:!''`` alone matched **618,818** assets while
+    ``entity_type:'managed'`` matched **216,274**, and adding ``aid:!''`` to
+    the latter changed nothing.  So ``aid:!''`` does not restrict to
+    sensor-managed hosts on this API — roughly two thirds of what it returns
+    has no ``aid`` at all and is discarded client-side below.  Filtering on
+    ``entity_type`` instead cuts the fetch by about 65%.  A tenant where that
+    clause selects nothing falls back to ``aid:!''`` alone.
+
+    Scoping: pass *fql_filter* to restrict the map to a subset of hosts (for
+    example the same host groups the rest of the run is scoped to).  Without
+    it the map covers every managed host in the CID, which for a run scoped to
+    one host group means fetching — and, under ``--bucket-by-aid``, creating a
+    directory for — orders of magnitude more hosts than needed.  Note the
+    hosts endpoint matches groups by **ID**; the name form returns 200 with
+    zero rows rather than an error, so an empty scoped result is treated as a
+    failure and retried unscoped.
+
     Args:
         credentials: Dict with ``client_id``, ``client_secret``, ``base_url``.
             Obtain via :func:`~femur.load_credentials`.
         page_size: Records per API page.  Capped at 1000 (the endpoint maximum).
         on_page: Optional callback invoked after each page with
             ``(n_records, total)``.  Used by the CLI for progress display.
+        fql_filter: Optional FQL scope clause, AND-ed with the base filter.
+            Group values must be group **IDs**.
 
     Returns:
         ``{discover_host_id: {"cid": cid, "aid": aid}}`` dict.
@@ -688,21 +737,86 @@ def build_host_map(
     Raises:
         :class:`~femur.FalconAPIError`: On API errors.
     """
+    _log = logging.getLogger("femur.discover")
     falcon = Discover(**credentials)
-    result: Dict[str, Dict[str, str]] = {}
-    for host in _paginate_after(
-        falcon.query_combined_hosts,
-        min(page_size, 1000),
-        "query_combined_hosts",
-        on_page=on_page,
-        filter="aid:!''",
-    ):
-        disc_id = host.get("id")
-        aid = host.get("aid")
-        cid = host.get("cid")
-        if disc_id and aid:
-            result[disc_id] = {"cid": cid, "aid": aid}
-    return result
+
+    def _collect(host_filter: str) -> Dict[str, Dict[str, str]]:
+        collected: Dict[str, Dict[str, str]] = {}
+        for host in _paginate_after(
+            falcon.query_combined_hosts,
+            min(page_size, 1000),
+            "query_combined_hosts",
+            on_page=on_page,
+            filter=host_filter,
+        ):
+            disc_id = host.get("id")
+            aid = host.get("aid")
+            cid = host.get("cid")
+            if disc_id and aid:
+                collected[disc_id] = {"cid": cid, "aid": aid}
+        return collected
+
+    def _scoped(base: str) -> str:
+        return f"{base}+{fql_filter}" if fql_filter else base
+
+    def _try(host_filter: str) -> Dict[str, Dict[str, str]]:
+        """Collect hosts, treating a rejected filter as an empty result.
+
+        Both failure shapes must be recoverable: a filter the endpoint refuses
+        (HTTP 4xx) and one it accepts but which selects nothing (HTTP 200, zero
+        rows — how a wrong group value form fails here). Descriptor exhaustion
+        is the exception: it cannot self-heal, so it propagates.
+        """
+        try:
+            return _collect(host_filter)
+        except FalconAPIError as exc:
+            if is_local_exhaustion(exc):
+                raise
+            _log.warning(
+                "Host map filter %r was rejected: %s", host_filter, exc,
+            )
+            return {}
+
+    # Prefer the entity_type form: aid:!'' alone does not restrict to managed
+    # hosts (see the docstring), so it fetches ~3x more than it can use.
+    result = _try(_scoped(MANAGED_HOST_FILTER))
+    if result:
+        if fql_filter:
+            _log.info(
+                "Host map scoped by %r: %d hosts. Compare this against the "
+                "expected size of the scope — a count matching the whole "
+                "tenant means the clause was accepted but ignored.",
+                fql_filter,
+                len(result),
+            )
+        return result
+
+    # Nothing came back. Either the scope selected no hosts, or this tenant
+    # does not honour entity_type. Both matter, and both are recoverable, so
+    # widen one step at a time rather than returning an empty map: an empty
+    # host map silently disables aid decoration and sends every record to
+    # _no_aid while the run still reports success.
+    if fql_filter:
+        _log.warning(
+            "Host map scope filter %r selected no hosts. On this API a wrong "
+            "value form returns HTTP 200 with zero rows rather than an error, "
+            "and group values must be group IDs, not names. Retrying without "
+            "the scope so aid decoration still works; every managed host in "
+            "the CID will be included. If the scope is genuinely empty, use "
+            "--skip-host-map instead.",
+            fql_filter,
+        )
+        result = _try(MANAGED_HOST_FILTER)
+        if result:
+            return result
+
+    _log.warning(
+        "No managed hosts matched %r — falling back to %r. This tenant may "
+        "not populate entity_type as expected.",
+        MANAGED_HOST_FILTER,
+        LEGACY_HOST_FILTER,
+    )
+    return _collect(LEGACY_HOST_FILTER)
 
 
 def decorate_applications_with_aid(

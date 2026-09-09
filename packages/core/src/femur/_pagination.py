@@ -4,6 +4,7 @@ import time
 from typing import Any, Callable, Iterator, List, Optional
 
 from ._exceptions import FalconAPIError
+from ._resources import LOCAL_EXHAUSTION_ADVICE, response_local_exhaustion
 
 _log = logging.getLogger("femur.retry")
 
@@ -51,6 +52,26 @@ def _retrying_call(
     for attempt in range(max_retries + 1):
         response = sdk_fn(**call_kwargs)
         status_code = response.get("status_code", 0)
+        # A local descriptor shortage arrives here disguised as a 5xx, because
+        # the HTTP client could not open a socket.  Retrying cannot help — the
+        # limit is ours — and six exponential back-offs per call per thread is
+        # how a fast local failure turns into a run that appears to hang.
+        local_exhaustion = response_local_exhaustion(response)
+        if local_exhaustion is not None:
+            _log.error(
+                "Local resource exhaustion on %s: %s. %s",
+                operation,
+                local_exhaustion,
+                LOCAL_EXHAUSTION_ADVICE,
+            )
+            raise FalconAPIError(
+                operation=operation,
+                status_code=status_code,
+                errors=[{
+                    "code": status_code,
+                    "message": f"{local_exhaustion} — {LOCAL_EXHAUSTION_ADVICE}",
+                }],
+            )
         if status_code not in _RETRY_STATUS_CODES or attempt == max_retries:
             return response
         if status_code == _AUTH_CODE:

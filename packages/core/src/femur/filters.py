@@ -11,7 +11,15 @@ with **different value semantics**:
 | Discover apps     | ``host.groups``   | ``host.tags``    | group **name**  |
 | Spotlight vulns   | ``host_info.groups`` | ``host_info.tags`` | group **ID** |
 | Config assessment | ``host.groups``   | ``host.tags``    | group **ID**    |
+| Discover hosts    | ``groups``        | ``tags``         | group **ID**    |
 +-------------------+-------------------+------------------+-----------------+
+
+The Discover **hosts** endpoint is the odd one out twice over: its fields are
+unprefixed, because the host is the top-level entity rather than a nested
+projection, and it matches groups by ID even though Discover *applications*
+matches by name.  Both forms were measured against a live GovCloud tenant:
+``groups:['<id>']`` returned the group's members, while ``groups:['<name>']``
+returned 200 with zero rows and ``host.groups`` was rejected outright.
 
 The CLI exposes two dataset-agnostic flags — ``--host-groups`` and
 ``--tags`` — and this module maps those user inputs onto the correct field
@@ -39,6 +47,17 @@ DATASET_SCOPE_FIELDS = {
     "applications": {"groups": "host.groups", "tags": "host.tags", "groups_by": "name"},
     "vulnerabilities": {"groups": "host_info.groups", "tags": "host_info.tags", "groups_by": "id"},
     "assessments": {"groups": "host.groups", "tags": "host.tags", "groups_by": "id"},
+    # Discover's *hosts* endpoint (query_combined_hosts) exposes the host as the
+    # top-level entity, so its group/tag fields are unprefixed — unlike the
+    # applications endpoint, where the host is a nested projection. Confirmed
+    # against CrowdStrike's swagger-derived endpoint table, which lists bare
+    # `groups` for /discover/combined/hosts/v1 and never `host.groups`.
+    #
+    # It matches groups by ID, not by name — unlike the applications endpoint.
+    # Measured: groups:['<id>'] and groups:'<id>' both return the group's
+    # members; both name forms return 200 with ZERO ROWS rather than an error,
+    # which is why build_host_map treats an empty scoped result as a failure.
+    "hosts": {"groups": "groups", "tags": "tags", "groups_by": "id"},
 }
 
 DEFAULT_TAG_PREFIX = "FalconGroupingTags"

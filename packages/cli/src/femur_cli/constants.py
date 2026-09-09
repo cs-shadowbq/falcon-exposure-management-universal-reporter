@@ -9,6 +9,11 @@ DEFAULT_OUTPUT_FORMAT = "json"
 DEFAULT_VULN_WORKERS = 1
 MAX_CONCURRENT_FETCHES = 4
 
+# Records per sink write when flushing the host map.  The map is built in
+# memory before writing, so handing it to the sink in one call would duplicate
+# it as a list of dicts; chunking bounds that overhead.
+HOST_MAP_WRITE_CHUNK = 5000
+
 # Dataset identifiers
 DATASET_APPLICATIONS = "applications"
 DATASET_VULNERABILITIES = "vulnerabilities"

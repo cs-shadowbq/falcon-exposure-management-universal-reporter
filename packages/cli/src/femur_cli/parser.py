@@ -5,6 +5,7 @@ from importlib.metadata import PackageNotFoundError, version as _pkg_version
 
 from femur.spotlight import DEFAULT_VULN_FILTER
 from femur.configuration import DEFAULT_ASSESSMENT_FILTER
+from femur_pipeline.sinks.aid_bucketed import DEFAULT_AID_SHARD_DEPTH
 
 from .constants import (
     DEFAULT_INDENT,
@@ -355,10 +356,26 @@ Examples:
         default=False,
         help=(
             "Route output records to per-AID subdirectories. Each unique agent "
-            "ID gets its own directory under <output-dir>/by_aid/ containing "
-            "one file per dataset. Enables per-host file discovery without "
-            "post-processing. Implies --decorate-aids for applications. "
+            "ID gets its own directory under <output-dir>/by_aid/<shard>/ "
+            "containing one file per dataset. Enables per-host file discovery "
+            "without post-processing. Implies --decorate-aids for applications. "
             "(default: off)"
+        ),
+    )
+    g_layout.add_argument(
+        "--aid-shard-depth",
+        type=int,
+        default=DEFAULT_AID_SHARD_DEPTH,
+        choices=(0, 1, 2, 3, 4),
+        metavar="N",
+        help=(
+            "With --bucket-by-aid, group AID directories under a shard "
+            "directory taken from their first N characters, so no single "
+            "directory holds every host. AIDs are hex, so each character "
+            f"gives 16 shards: the default {DEFAULT_AID_SHARD_DEPTH} gives 256, "
+            "keeping any one directory to a few thousand entries even in very "
+            "large tenants. Use 0 for the flat by_aid/<aid>/ layout. "
+            f"(default: {DEFAULT_AID_SHARD_DEPTH})"
         ),
     )
     g_layout.add_argument(

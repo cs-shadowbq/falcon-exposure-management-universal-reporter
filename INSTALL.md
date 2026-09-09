@@ -5,6 +5,37 @@ FEMUR ships two console binaries:
 - **`femur`** — the CLI that downloads Falcon application inventory, vulnerabilities, and configuration assessments.
 - **`femurd`** — the REST API server that serves the data `femur` produces.
 
+## System limits for large environments
+
+`femur` bounds its own open file descriptors, so no particular `ulimit -n` is required.
+The limits that do matter, in order of how likely they are to stop you:
+
+- **Free blocks, if you use `--bucket-by-aid`.** This is the one that bites. Each host gets
+  a directory holding up to five small files, and every non-empty file occupies at least
+  one filesystem block (4 KB by default) however few bytes it holds. At 200K hosts that is
+  ~1M files and **~4 GB minimum before any data is counted**. Size the output filesystem
+  by `files × block_size`, not by expected data volume:
+
+  ```bash
+  df -h <output-dir>          # free blocks
+  xfs_info <output-dir> | grep bsize   # or tune2fs -l <dev> | grep 'Block size'
+  ```
+
+  `--compressed-by-aid` reduces this by ~5x (one archive per host instead of five files)
+  and compresses the contents on top. Scoping the run with `--host-groups` reduces it in
+  proportion to the host count.
+
+- **Open files.** The limit that applies is the one in force *inside* the process, which in
+  a container is set by the container runtime and is often not what `ulimit -n` reports in
+  your shell. `femur` raises its soft limit to the hard limit at startup and prints both in
+  the run banner when `--bucket-by-aid` is used.
+
+- **Per-directory subdirectory caps.** Largely historical. AID directories are sharded by
+  default (`--aid-shard-depth 2`, giving 256 shards), so no single directory holds every
+  host. The ~64,999-subdirectory cap only exists on ext3, or ext4 with `dir_nlink`
+  disabled; **RHEL 9 defaults to XFS, which has no such cap**, and modern ext4 enables
+  `dir_nlink`. Confirm with `df -T <output-dir>`.
+
 ## Standard Install (from GitHub Release)
 
 Download wheels from the latest

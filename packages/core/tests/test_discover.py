@@ -9,6 +9,7 @@ from femur.discover import (
     iter_applications_mac_buckets,
     iter_applications_parallel_offset,
     iter_hosts,
+    build_host_map,
 )
 
 CREDS = {"client_id": "test", "client_secret": "test", "base_url": "US1"}
@@ -495,3 +496,126 @@ class TestIterApplicationsMacBuckets:
         # Discover is constructed once for the probe phase (+ once per Phase 1
         # bucket chain, but with total=0 there are no chains).
         assert MockDiscover.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# build_host_map — scoping
+#
+# Without a scope filter the map covers every sensor-managed host in the CID.
+# For a run scoped to one host group that meant fetching hundreds of thousands
+# of irrelevant hosts, and under --bucket-by-aid creating a directory for each.
+# ---------------------------------------------------------------------------
+
+
+HOSTS = [
+    {"id": "h1", "aid": "aid1", "cid": "c1"},
+    {"id": "h2", "aid": "aid2", "cid": "c1"},
+]
+
+
+class TestBuildHostMap:
+    @patch("femur.discover.Discover")
+    def test_maps_host_id_to_cid_and_aid(self, MockDiscover):
+        MockDiscover.return_value.query_combined_hosts.return_value = make_response(HOSTS)
+        assert build_host_map(CREDS) == {
+            "h1": {"cid": "c1", "aid": "aid1"},
+            "h2": {"cid": "c1", "aid": "aid2"},
+        }
+
+    @patch("femur.discover.Discover")
+    def test_excludes_hosts_without_an_aid(self, MockDiscover):
+        MockDiscover.return_value.query_combined_hosts.return_value = make_response(
+            [{"id": "h1", "aid": "aid1", "cid": "c1"}, {"id": "h2", "cid": "c1"}]
+        )
+        assert list(build_host_map(CREDS)) == ["h1"]
+
+    @patch("femur.discover.Discover")
+    def test_rejected_scope_falls_back_to_unscoped(self, MockDiscover):
+        """An unsupported group field must not cost the whole run."""
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.side_effect = [
+            make_response([], status_code=400),
+            make_response(HOSTS),
+        ]
+        result = build_host_map(CREDS, fql_filter="host.groups:['Workstations']")
+        assert result == {
+            "h1": {"cid": "c1", "aid": "aid1"},
+            "h2": {"cid": "c1", "aid": "aid2"},
+        }
+        # Second attempt drops the scope clause.
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == (
+            "entity_type:'managed'+aid:!''"
+        )
+
+    @patch("femur.discover.Discover")
+    def test_local_exhaustion_is_not_swallowed_by_the_fallback(self, MockDiscover):
+        """Descriptor exhaustion is fatal — retrying unscoped would be worse."""
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.return_value = make_response(
+            [], status_code=500,
+        )
+        instance.query_combined_hosts.return_value["body"]["errors"] = [
+            {"code": 500, "message": "[Errno 24] Too many open files"}
+        ]
+        with pytest.raises(FalconAPIError):
+            build_host_map(CREDS, fql_filter="groups:['Workstations']")
+        assert instance.query_combined_hosts.call_count == 1
+
+
+class TestBuildHostMapScoping:
+    """Measured on a live tenant: the hosts endpoint matches groups by ID, and
+    a wrong value form returns HTTP 200 with zero rows rather than an error."""
+
+    @patch("femur.discover.Discover")
+    def test_base_filter_selects_managed_hosts(self, MockDiscover):
+        """aid:!'' alone does not restrict to managed hosts; entity_type does."""
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.return_value = make_response(HOSTS)
+        build_host_map(CREDS)
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == (
+            "entity_type:'managed'+aid:!''"
+        )
+
+    @patch("femur.discover.Discover")
+    def test_scope_is_anded_onto_the_base_filter(self, MockDiscover):
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.return_value = make_response(HOSTS)
+        build_host_map(CREDS, fql_filter="groups:['abc123']")
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == (
+            "entity_type:'managed'+aid:!''+groups:['abc123']"
+        )
+
+    @patch("femur.discover.Discover")
+    def test_zero_rows_retries_without_the_scope(self, MockDiscover):
+        """A group NAME parses but matches nothing, so it must not be trusted."""
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.side_effect = [
+            make_response([]),      # scoped: 200, zero rows
+            make_response(HOSTS),   # unscoped managed
+        ]
+        result = build_host_map(CREDS, fql_filter="groups:['Some-Group-Name']")
+        assert len(result) == 2
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == (
+            "entity_type:'managed'+aid:!''"
+        )
+
+    @patch("femur.discover.Discover")
+    def test_falls_back_to_legacy_filter_when_entity_type_selects_nothing(
+        self, MockDiscover
+    ):
+        """A tenant that does not populate entity_type must still work."""
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.side_effect = [
+            make_response([]),      # entity_type form
+            make_response(HOSTS),   # aid:!'' form
+        ]
+        result = build_host_map(CREDS)
+        assert len(result) == 2
+        assert instance.query_combined_hosts.call_args.kwargs["filter"] == "aid:!''"
+
+    @patch("femur.discover.Discover")
+    def test_scoped_success_does_not_widen(self, MockDiscover):
+        instance = MockDiscover.return_value
+        instance.query_combined_hosts.return_value = make_response(HOSTS)
+        build_host_map(CREDS, fql_filter="groups:['abc123']")
+        assert instance.query_combined_hosts.call_count == 1

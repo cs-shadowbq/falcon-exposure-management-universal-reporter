@@ -148,3 +148,7 @@ Developer.HowWeAreGoingToDoThis.md
 
 # Do not store test data in version control
 fixtures/
+
+# Local research / probe scripts. These hit live tenants and are not shipped;
+# scripts/ is for production code.
+research/
