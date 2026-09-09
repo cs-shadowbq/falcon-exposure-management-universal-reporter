@@ -311,7 +311,7 @@ def main(argv: Optional[List[str]] = None) -> None:  # noqa: C901
     # build_host_map takes the first that actually selects hosts.
     host_map_filter: Optional[str] = None
     if group_names or tags:
-        app_filter = augment_filter(app_filter, "applications", group_values=group_names, tags=tags)
+        app_filter = augment_filter(app_filter, "applications", group_values=group_ids, tags=tags)
         vuln_filter = augment_filter(vuln_filter, "vulnerabilities", group_values=group_ids, tags=tags)
         assessment_filter = augment_filter(assessment_filter, "assessments", group_values=group_ids, tags=tags)
         # Measured: the Discover hosts endpoint matches groups by ID. The name
@@ -618,6 +618,23 @@ def _main_streaming(
     summary.add_column("Dataset", style="bold")
     summary.add_column("Records", justify="right", style="cyan")
     summary.add_column("Status", justify="center")
+    # A dataset that returns zero records is not an error, so it never reached
+    # fetch_errors and the run reported success. But zero records *while a scope
+    # filter is applied and a sibling dataset returned data* is almost always a
+    # filter that parsed and matched nothing — the value form is wrong, not the
+    # fleet. That is how a --host-groups run silently produced 0 applications
+    # alongside millions of vulnerabilities for the same scope.
+    scoped = bool(args.host_groups or args.tags)
+    counts = {
+        "applications": apps_r,
+        "vulnerabilities": vulns_r,
+        "assessments": asmts_r,
+    }
+    numeric = {k: v for k, v in counts.items() if not isinstance(v, Exception)}
+    empty = sorted(k for k, v in numeric.items() if v == 0)
+    populated = sorted(k for k, v in numeric.items() if v > 0)
+    suspect_empty = empty if (scoped and populated) else []
+
     for label, result in [
         ("Applications", apps_r),
         ("Vulnerabilities", vulns_r),
@@ -626,10 +643,26 @@ def _main_streaming(
     ]:
         if isinstance(result, Exception):
             summary.add_row(label, "[dim]—[/dim]", "[red]✗ failed[/red]")
+        elif label.lower() in suspect_empty:
+            summary.add_row(label, "0", "[yellow]⚠ empty[/yellow]")
         else:
             summary.add_row(label, f"{result:,}", "[green]✓[/green]")
     console.print(summary)
     console.print()
+    if suspect_empty:
+        console.print(
+            f"[bold yellow]⚠[/bold yellow]  [bold]{', '.join(suspect_empty)}[/bold] "
+            f"returned [bold]zero[/bold] records while "
+            f"{', '.join(populated)} returned data for the same scope."
+        )
+        console.print(
+            "   A scope filter that parses but matches nothing returns zero rows "
+            "rather than an error, so this usually means the filter is wrong for "
+            "that dataset — not that the scope is empty. Check the filters shown "
+            "in the banner above; note the datasets use different group field "
+            "names and value forms."
+        )
+        console.print()
     if fetch_errors:
         console.print(
             "[yellow]⚠[/yellow]  One or more datasets failed mid-stream. Any "
@@ -649,6 +682,15 @@ def _main_streaming(
         console.print(
             f"[bold red]✗[/bold red] Exiting non-zero: {len(fetch_errors)} "
             f"dataset(s) failed ({failed})."
+        )
+        console.print()
+        sys.exit(1)
+
+    if suspect_empty:
+        console.print(
+            f"[bold red]✗[/bold red] Exiting non-zero: {', '.join(suspect_empty)} "
+            f"returned zero records under a scope filter that other datasets "
+            f"matched. Treat this output as incomplete."
         )
         console.print()
         sys.exit(1)

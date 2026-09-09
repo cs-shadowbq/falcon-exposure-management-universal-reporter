@@ -8,7 +8,7 @@ with **different value semantics**:
 +-------------------+-------------------+------------------+-----------------+
 | Dataset           | Groups field      | Tags field       | Group value     |
 +===================+===================+==================+=================+
-| Discover apps     | ``host.groups``   | ``host.tags``    | group **name**  |
+| Discover apps     | ``host.groups``   | ``host.tags``    | group **ID**    |
 | Spotlight vulns   | ``host_info.groups`` | ``host_info.tags`` | group **ID** |
 | Config assessment | ``host.groups``   | ``host.tags``    | group **ID**    |
 | Discover hosts    | ``groups``        | ``tags``         | group **ID**    |
@@ -27,8 +27,8 @@ name and value type for each dataset, then folds them into any user-supplied
 ``--*-filter`` FQL with a logical AND (``+``).
 
 Group names are resolved to IDs by the caller (see
-:func:`~femur.resolve_group_names_to_ids`) because only Discover accepts
-names; Spotlight and Configuration Assessment require IDs.
+:func:`~femur.resolve_group_names_to_ids`): every dataset filters on the group
+**ID**.  The CLI accepts names for usability and resolves them once.
 
 Tag values are normalised with :func:`normalize_tag`: a bare value such as
 ``Monkey`` is prefixed to ``FalconGroupingTags/Monkey``, while a value that
@@ -44,7 +44,11 @@ from ._pagination import build_fql
 # ``groups_by`` records whether the dataset matches groups by ``name`` or
 # ``id`` so the CLI can supply the correct value list.
 DATASET_SCOPE_FIELDS = {
-    "applications": {"groups": "host.groups", "tags": "host.tags", "groups_by": "name"},
+    # host.groups matches a group ID, not a name. The name form is not an
+    # error -- it returns 200 with zero rows -- which is how a scoped run
+    # silently produced 0 applications while assessments, using this same
+    # field name with IDs, returned data for the identical scope.
+    "applications": {"groups": "host.groups", "tags": "host.tags", "groups_by": "id"},
     "vulnerabilities": {"groups": "host_info.groups", "tags": "host_info.tags", "groups_by": "id"},
     "assessments": {"groups": "host.groups", "tags": "host.tags", "groups_by": "id"},
     # Discover's *hosts* endpoint (query_combined_hosts) exposes the host as the
